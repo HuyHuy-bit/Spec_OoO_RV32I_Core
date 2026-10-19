@@ -1,5 +1,5 @@
 `default_nettype none
-module control_flow_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMORY_SERVICE = 0) (
+module control_flow_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMORY_SERVICE = 0, parameter bit PREFILL_STORES = 0) (
   input wire clk_i, rst_i, flush_i, drained_i,
   input wire cancel_system_i,
   input wire memory_issue_allowed_i, admit_valid_i,
@@ -128,7 +128,7 @@ module control_flow_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit ME
     end
   end
 
-  // Faults use a resultless scheduling token; only their saved metadata reaches the ROB.
+  // fault tokens carry saved metadata to the rob without a result.
   always_comb begin
     completion_event_o = producer_event;
     for (int lane = 0; lane < 2; lane++) begin
@@ -156,7 +156,7 @@ module control_flow_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit ME
     .mispredict_o(resolve_mispredict_o), .next_pc_o(resolve_pc_o), .resolve_take_i(resolve_accept_o)
   );
 
-  // The sole resolver is port zero; only a younger port-one held result can be canceled here.
+  // only port zero resolves; cancel a younger held port-one result.
   alu_pipeline producer1 (
     .clk_i, .rst_i, .flush_i(producer_flush || cancel_alu1), .launch_i(issue_o[1]), .ready_o(producer_ready[1]),
     .id_i(issue_id_o[25:13]), .instruction_i(issue_payload[95:64]), .pc_i(issue_payload[127:96]),
@@ -204,7 +204,7 @@ module control_flow_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit ME
     );
     if (MEMORY_SERVICE) begin : memory_service
       wire [11:0] unused_fatal;
-      head_memory_controller memory_head_controller (
+      head_memory_controller #(.PREFILL_STORES(PREFILL_STORES)) memory_head_controller (
         .clk_i, .rst_i, .recovery_i(flush_i || redirect_o || trap_accept_o), .cancel_i(flush_i),
         .memory_valid_i(owner_valid && owner_memory && !cancel_system_i),
         .memory_id_i(system_id), .instruction_i(system_instruction), .pc_i(owner_pc),
@@ -273,6 +273,9 @@ module control_flow_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit ME
   end
   if (MEMORY_SERVICE && !SYSTEM_SERVICE) begin : invalid_memory_configuration
     initial $error("MEMORY_SERVICE_REQUIRES_SYSTEM_SERVICE");
+  end
+  if (PREFILL_STORES && !MEMORY_SERVICE) begin : invalid_prefill_configuration
+    initial $error("PREFILL_STORES_REQUIRES_MEMORY_SERVICE");
   end
 
   issue_backend backend (

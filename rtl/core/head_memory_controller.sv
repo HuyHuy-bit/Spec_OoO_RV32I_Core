@@ -1,5 +1,5 @@
 `default_nettype none
-module head_memory_controller (
+module head_memory_controller #(parameter bit PREFILL_STORES = 0) (
   input wire clk_i, rst_i, recovery_i, cancel_i,
   input wire memory_valid_i,
   input wire [12:0] memory_id_i,
@@ -53,7 +53,7 @@ module head_memory_controller (
   wire active = !rst_i && !fatal_o;
   wire cancel = active && cancel_i && !irrevocable_o;
   wire owner_live = owner_q && head_valid_i && head_id_i == id && head_pc_i == pc;
-  wire cached_store = prepared && store && !uncached && !fault && !launched_q;
+  wire cached_store = prepared && store && !uncached && !fault && (!launched_q || PREFILL_STORES);
   wire result_live = active && owner_live && result_valid && !cancel_i;
   wire accepted_serial = serial_offer_o && serial_accept_i;
   wire accepted_fault = fault_offer_o && fault_accept_i;
@@ -76,7 +76,7 @@ module head_memory_controller (
   assign serial_offer_o = active && owner_live && !cancel_i
     && ((cached_store && commit_ready) || (result_valid && !result_fault));
   assign fault_offer_o = result_live && result_fault && !fault_sent_q;
-  // Completion records the fault; only accepted trap entry releases its memory ownership.
+  // retain fault ownership until accepted trap entry.
   assign trap_ready_o = result_live && result_fault && fault_sent_q;
   assign serial_id_o = serial_offer_o ? id : 13'd0;
   assign fault_id_o = fault_offer_o ? id : 13'd0;
@@ -136,7 +136,7 @@ module head_memory_controller (
     end
   end
 
-  // Keep the prepared instruction and operands until retirement, not just engine launch.
+  // retain the instruction and operands through retirement or trap entry.
   load_store_prepare preparation (
     .clk_i, .rst_i, .flush_i(cancel), .launch_i(prepare_o), .ready_o(prepare_ready),
     .id_i(memory_id_i), .instruction_i, .pc_i, .source1_i, .source2_i,
@@ -145,9 +145,9 @@ module head_memory_controller (
     .cause_o(cause), .trap_value_o(trap_value), .byte_mask_o(mask), .size_o(size),
     .store_o(store), .load_unsigned_o(load_unsigned), .uncached_o(uncached), .head_only_o(head_only), .fault_o(fault)
   );
-  memory_transaction_path transactions (
+  memory_transaction_path #(.PREFILL_STORES(PREFILL_STORES)) transactions (
     .clk_i, .rst_i, .recovery_i, .kill_i(cancel),
-    .desc_valid_i(owner_live && prepared && !launched_q), .desc_take_o(desc_take),
+    .desc_valid_i(owner_live && prepared && (!launched_q || (PREFILL_STORES && cached_store))), .desc_take_o(desc_take),
     .id_i(id), .address_i(address), .write_data_i(write_data), .byte_mask_i(mask), .size_i(size),
     .store_i(store), .unsigned_i(load_unsigned), .uncached_i(uncached), .head_only_i(head_only),
     .fault_i(fault), .cause_i(cause), .trap_value_i(trap_value),
@@ -180,7 +180,7 @@ module head_memory_controller (
       assert (!result_valid || (owner_q && launched_q && result_id == id)) else $fatal(1, "HEAD_MEMORY_RESULT");
       assert (!prepare_o || (!owner_q && !path_busy)) else $fatal(1, "HEAD_MEMORY_PREPARE");
       if (active && !cancel_i) begin
-        assert (!admit_valid_i || admission_valid_o) else $fatal(1, "HEAD_MEMORY_ADMISSION");
+        assert (PREFILL_STORES || !admit_valid_i || admission_valid_o) else $fatal(1, "HEAD_MEMORY_ADMISSION");
         assert (!released_q || !(memory_valid_i && memory_id_i == released_id_q && pc_i == released_pc_q))
           else $fatal(1, "HEAD_MEMORY_RELEASE");
       end

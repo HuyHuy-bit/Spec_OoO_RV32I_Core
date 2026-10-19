@@ -53,6 +53,8 @@ def validate(config: dict) -> None:
             raise ValueError("memory regions overlap")
         if region["cacheable"] and (base % line_bytes or size % line_bytes):
             raise ValueError("cacheable region must end on cache-line boundaries")
+        if region["cacheable"] and region["write"] and not (region["read"] and region["idempotent"]):
+            raise ValueError("cacheable writable regions require readable idempotent refills")
         if not region["cacheable"] and (region["execute"] or region["idempotent"]):
             raise ValueError("MMIO must be non-executable and non-idempotent")
         names.add(region["name"])
@@ -120,7 +122,7 @@ def render_sv(config: dict, digest: str) -> str:
             f"  localparam logic [31:0] CSR_{name}_FIXED_MASK = 32'h{integer(csr['fixed_mask']):08x};",
             f"  localparam logic [31:0] CSR_{name}_FIXED_VALUE = 32'h{integer(csr['fixed_value']):08x};",
         ])
-    # Index-ordered CSR tables; entry i is config["csrs"][i] (packed arrays list MSB first).
+    # preserve config csr indices in msb-first packed arrays.
     names = [identifier(csr["name"]) for csr in reversed(config["csrs"])]
     lines.append(f"  localparam int CSR_COUNT = {len(names)};")
     for table, width, suffix in [("ADDRESSES", 12, ""), ("RESETS", 32, "_RESET"), ("WRITE_MASKS", 32, "_WRITE_MASK"),

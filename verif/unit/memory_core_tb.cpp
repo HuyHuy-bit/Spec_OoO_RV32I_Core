@@ -12,9 +12,9 @@ struct MemoryBench : Bench {
     unsigned allocations=0, watched_allocations=0, watch_pc=20, data_latency=1, remaining=0, kind=0, bytes=0, cause=0, mask=0, client=0;
     uint32_t address=0, data=0, fault_address=UINT32_MAX;
     // check retired loads against architectural bytes and backing memory after a cache clean.
-    bool dcache=false, ext_offered=false, ext_write=false, ext_uncached=false, writeback_fatal_next=false;
+    bool dcache=false, inject_admit=false, ext_offered=false, ext_write=false, ext_uncached=false, writeback_fatal_next=false;
     unsigned ext_id=0, ext_size=0, ext_strobe=0, port_transactions=0, prepare_transactions=0;
-    uint32_t ext_address=0, ext_data=0, ext_mask=0, writeback_fault=UINT32_MAX;
+    uint32_t ext_address=0, ext_data=0, writeback_fault=UINT32_MAX;
     std::array<uint8_t,32> ext_line{};
     std::array<uint32_t,(REQUEST_BITS+31)/32> ext_held{};
     MemoryBench() {
@@ -46,7 +46,6 @@ struct MemoryBench : Bench {
         // a data-cache protocol fatal may withdraw an offered request.
         if (ext_offered && !bad_response && !d.memory_fatal_o) require(d.data_request_valid_o,"data request withdrawn");
         if (d.data_request_valid_o) {
-            // hold the entire request through acceptance.
             if (ext_offered) for (unsigned n=0;n<REQUEST_BITS;n++)
                 require(bit(d.data_request_o,n)==bit(ext_held,n),"data request changed under stall bit="+std::to_string(n));
             require(!accepted || answered,"overlapping data requests");
@@ -59,10 +58,13 @@ struct MemoryBench : Bench {
                     if (n<REQUEST_TRANSACTION_ID_OFFSET || n>=REQUEST_TRANSACTION_ID_OFFSET+4)
                         require(bit(d.data_request_o,n)==bit(packet,n),"MMIO request bit="+std::to_string(n));
             } else {
+                require(!d.memory_committed_o,"committed store required external traffic");
                 require(a%32==0 && a<65536+0x10000 && (write ? line_mask==UINT32_MAX:line_mask==0),"D$ line request shape");
-                for (unsigned n=0;n<32;n++) require(get32(d.data_request_o,REQUEST_UNCACHED_WRITE_DATA_OFFSET,32)==0
-                    && get32(d.data_request_o,REQUEST_UNCACHED_WRITE_STROBE_OFFSET,4)==0 && get32(d.data_request_o,REQUEST_UNCACHED_SIZE_OFFSET,2)==0
-                    && (write || get32(d.data_request_o,REQUEST_LINE_WRITE_DATA_OFFSET+8*n,8)==0),"D$ line request reserved fields");
+                require(get32(d.data_request_o,REQUEST_UNCACHED_WRITE_DATA_OFFSET,32)==0
+                    && get32(d.data_request_o,REQUEST_UNCACHED_WRITE_STROBE_OFFSET,4)==0
+                    && get32(d.data_request_o,REQUEST_UNCACHED_SIZE_OFFSET,2)==0,"D$ line request reserved fields");
+                if (!write) for (unsigned n=0;n<32;n++)
+                    require(get32(d.data_request_o,REQUEST_LINE_WRITE_DATA_OFFSET+8*n,8)==0,"D$ read request write data");
             }
             offered=true;
             if (data_ready) {
@@ -70,7 +72,7 @@ struct MemoryBench : Bench {
                 ext_id=id; ext_write=write; ext_uncached=uncached_request; ext_address=a;
                 ext_size=get32(d.data_request_o,REQUEST_UNCACHED_SIZE_OFFSET,2);
                 ext_data=get32(d.data_request_o,REQUEST_UNCACHED_WRITE_DATA_OFFSET,32);
-                ext_strobe=get32(d.data_request_o,REQUEST_UNCACHED_WRITE_STROBE_OFFSET,4); ext_mask=line_mask;
+                ext_strobe=get32(d.data_request_o,REQUEST_UNCACHED_WRITE_STROBE_OFFSET,4);
                 for (unsigned n=0;n<32;n++) ext_line[n]=uint8_t(get32(d.data_request_o,REQUEST_LINE_WRITE_DATA_OFFSET+8*n,8));
                 coverage[uncached_request ? "dcache_mmio":write ? "dcache_writeback":"dcache_fill"]++;
                 coverage["data_requests"]++;
@@ -99,7 +101,7 @@ struct MemoryBench : Bench {
     }
     void drive_memory(const Input&) override {
         d.memory_issue_allowed_i=issue_allowed;
-        d.admit_valid_i=admit && d.admission_valid_o;
+        d.admit_valid_i=admit && (dcache ? inject_admit:bool(d.admission_valid_o));
         d.admit_id_i=d.admission_id_o ^ (wrong_admit ? 32:0);
         d.data_request_ready_i=data_ready;
         d.data_response_valid_i=bad_response || (accepted && !answered && !remaining);
@@ -213,10 +215,10 @@ struct MemoryBench : Bench {
         if (d.memory_prepare_o) prepare();
         if (prepared && !i.flush) require(!d.dispatch_o,"younger dispatch past memory barrier");
         if (d.admission_valid_o) {
-            require(prepared && store && !uncached && !cause,"unexpected admission");
+            require(prepared && store && !uncached && (!cause || (dcache && address==fault_address)),"unexpected admission");
             uint32_t lanes=0; for (unsigned n=0;n<bytes;n++) lanes|=((data>>(8*n))&255)<<(8*((address+n)%4));
             require(d.admission_address_o==address && d.admission_data_o==lanes && d.admission_mask_o==mask && d.admission_size_o==kind%4,"admission descriptor");
-            if (!admit || wrong_admit) { require(!d.retire_accept_o,"unadmitted store retirement"); coverage[wrong_admit ? "wrong_admission":"admission_stall"]++; }
+            if (!dcache && (!admit || wrong_admit)) { require(!d.retire_accept_o,"unadmitted store retirement"); coverage[wrong_admit ? "wrong_admission":"admission_stall"]++; }
         }
         // the affected instruction cannot complete while fatal propagates.
         if (data_fatal && !d.fatal_o) {
@@ -275,7 +277,13 @@ struct MemoryBench : Bench {
                 }
             }
             if (uncached) require(answered && coherent(),"MMIO store completion before retirement");
-            else { committed=true; coverage["store_commit"]++; }
+            else {
+                if (dcache) {
+                    require(!offered || answered,"store retired before its refill response");
+                    coverage[port_transactions==prepare_transactions ? "store_admission_hit":"store_admission_miss"]++;
+                }
+                committed=true; coverage["store_commit"]++;
+            }
         }
         if (dcache && !store && !uncached) coverage[port_transactions==prepare_transactions ? "dcache_load_hit":"dcache_load_miss"]++;
         prepared=false; coverage["memory_retired"]++;
@@ -299,7 +307,7 @@ static void initialize(MemoryBench& b) {
     b.memory[2]=instruction(2,2,2,0,0x321);
     b.memory[3]=instruction(0,3,0,0,0x10000000);
     b.watch_older_fault=b.watch_branch_fence=b.younger_dispatched=b.bad_response=false; b.watch_pc=20;
-    b.issue_allowed=b.admit=b.data_ready=true; b.wrong_admit=false; b.fault_address=UINT32_MAX;
+    b.issue_allowed=b.admit=b.data_ready=true; b.wrong_admit=b.inject_admit=false; b.fault_address=UINT32_MAX;
 }
 // hold the stop marker at the head until older work drains.
 static Input hold_at(const MemoryBench& b,uint32_t stop,Input i) {
@@ -337,7 +345,7 @@ static void run(MemoryBench& b,uint32_t stop,std::mt19937& rng) {
 }
 static void drain_setup(MemoryBench& b) {
     initialize(b); b.memory[4]=mem(true,2,0,1,2); b.memory[5]=0x0ff0000f; b.reset();
-    b.data_ready=false; b.data_latency=30;
+    b.data_ready=b.dcache; b.data_latency=30;
     for (unsigned n=0;n<1000 && !b.committed;n++) b.tick();
     b.require(b.committed,"drain committed-store setup");
     Input i; i.enable=false; i.flush=true; i.target=0x800; b.tick(i); i.flush=false;
@@ -401,8 +409,8 @@ int main(int argc,char** argv) {
             b.memory[at++]=instruction(2,7,0,0,0x400);
             b.memory[at++]=csr(0x305,1,7,0);
             if (test>=4) b.fault_address=addr;
-            // cached stores receive guaranteed admission, so only loads may bus-fault there.
-            if (test==5) continue;
+            // uncached builds require an infallible admitted target.
+            if (test==5 && !b.dcache) continue;
             const unsigned fault_pc=at*4;
             b.memory[at++]=mem(store,2,4,1,2);
             b.memory[at++]=csr(0xb02,2,0,9);
@@ -464,7 +472,7 @@ int main(int argc,char** argv) {
             initialize(b); b.memory[4]=mem(phase>=2,2,4,phase==0 || phase==3 ? 1:3,2);
             b.reset(); b.data_latency=30;
             bool reached=false;
-            for (unsigned n=0;n<1000;n++) { Input i; i.retire=b.prepared && phase!=3 ? 0:3; b.tick(i); if (b.accepted) { reached=true; break; } }
+            for (unsigned n=0;n<1000;n++) { Input i; i.retire=b.prepared && phase!=3 ? 0:3; b.tick(i); if (b.dcache && phase==3 ? b.committed : b.accepted) { reached=true; break; } }
             b.require(reached,"frontend fatal memory setup");
             Input bad; bad.inject_bad=true; bad.retire=0; b.tick(bad);
             for (unsigned n=0;n<80;n++) { Input i; i.retire=0; b.tick(i); }
@@ -526,12 +534,12 @@ int main(int argc,char** argv) {
             initialize(b); b.memory[4]=mem(true,2,0,1,2); b.memory[5]=fences[kind][0];
             b.memory[0x800/4]=fences[kind][0]; b.memory[0x804/4]=csr(0xb02,2,0,6);
             b.reset(); b.data_latency=60;
-            unsigned reached=0;
-            for (unsigned n=0;n<2000 && reached<4;n++) {
+            unsigned reached=0; const unsigned required=b.dcache && !held ? 1:4;
+            for (unsigned n=0;n<2000 && reached<required;n++) {
                 Input i; i.retire=held && b.system_prepared ? 0:3; b.tick(i);
                 if (held ? b.system_prepared:b.pc==20 && b.committed && b.d.occupancy_o && b.d.memory_busy_o && !b.system_prepared) reached++;
             }
-            b.require(reached==4,"FENCE cancellation watchdog");
+            b.require(reached==required,"FENCE cancellation watchdog");
             const auto redirects=b.coverage["fence_i_redirect"];
             if (cancel==1) b.reset();
             else if (cancel==0) { Input i; i.flush=true; i.target=0x800; b.tick(i); run(b,0x808,rng); }
@@ -546,7 +554,7 @@ int main(int argc,char** argv) {
         }
         initialize(b); b.memory[4]=mem(true,2,0,1,2); b.memory[5]=0xffffffff; b.memory[6]=fences[kind][0];
         b.memory[0x100/4]=csr(0x342,2,0,10); b.reset(); b.watch_older_fault=true; b.watch_pc=24; b.data_latency=60;
-        for (unsigned n=0;n<1000 && !b.younger_dispatched;n++) { b.data_ready=false; b.tick(); }
+        for (unsigned n=0;n<1000 && !b.younger_dispatched;n++) { b.data_ready=b.dcache; b.tick(); }
         b.require(b.younger_dispatched && b.committed,"younger FENCE allocation watchdog"); run(b,0x104,rng);
         b.require(b.regs[10]==2,"older fault behind FENCE"); b.coverage["older_fault_"+key.substr(0,key.size()-1)]++;
         // hold an older branch until the wrong-path barrier owns the next rob slot.
@@ -622,14 +630,14 @@ int main(int argc,char** argv) {
             b.memory[4]=instruction(0,9,0,0,(value+0x800)&0xfffff000U); b.memory[5]=instruction(2,9,9,0,value&4095);
             b.memory[6]=mem(true,2,0,0,9,32); b.memory[7]=0x0000100f;
             b.memory[8]=old_word; b.memory[9]=csr(0xb02,2,0,6);
-            b.reset(); b.data_ready=false;
+            b.reset(); b.data_ready=b.dcache;
             const auto request=[&] { return b.d.request_valid_o && get32(b.d.request_o,REQUEST_ADDRESS_OFFSET,32)==32; };
             bool reached=false;
             for (unsigned n=0;n<1000 && !reached;n++) {
-                Input i; i.request_ready=!(mode==0 && request()); i.latency=request() ? 1000:1; b.tick(i);
-                reached=b.committed && (mode==0 ? b.held:b.pending && b.pending_address==32);
+                Input i; i.retire=b.pc==28 ? 0:3; i.request_ready=!(mode==0 && request()); i.latency=request() ? 1000:1; b.tick(i);
+                reached=(b.dcache ? b.pc==28:b.committed) && (mode==0 ? b.held:b.pending && b.pending_address==32);
             }
-            b.require(reached && (mode==0 || b.pending_line[0]==old_word),"old FENCE.I line request setup");
+            b.require(reached && (mode==0 || b.pending_line[0]==old_word),"old FENCE.I line request setup mode="+std::to_string(mode)+" pc="+std::to_string(b.pc)+" committed="+std::to_string(b.committed)+" held="+std::to_string(b.held)+" pending="+std::to_string(b.pending)+" pending_address="+std::to_string(b.pending_address));
             b.data_ready=true;
             for (unsigned n=0;n<1000 && !(b.system_prepared && (b.d.retire_valid_o&1));n++) { Input i; i.retire=0; i.request_ready=mode!=0; b.tick(i); }
             b.require(b.system_prepared && (b.d.retire_valid_o&1) && !b.committed && (mode==0 ? b.held:b.pending),"held FENCE.I with old fetch traffic");
@@ -676,6 +684,92 @@ int main(int argc,char** argv) {
         }
 #endif
 #ifdef DCACHE_CORE
+        // external admission cannot bypass issue permission or change cached-store timing.
+        unsigned admission_cycles=0;
+        for (bool inject:{false,true}) {
+            initialize(b); b.memory[4]=mem(true,2,0,1,2); b.memory[5]=0x0000100f;
+            b.memory[6]=mem(true,2,0,1,2,0x200); b.memory[7]=mem(false,2,8,1,0,0x200);
+            b.memory[8]=0x0000100f; b.memory[9]=csr(0xb02,2,0,6);
+            b.reset(); b.inject_admit=inject; b.data_latency=12;
+            const auto start=b.cycles, commits=b.coverage["store_commit"], waits=b.coverage["store_issue_wait"];
+            run_until(b,40,[&](unsigned n) {
+                b.issue_allowed=n>=100; b.data_ready=n%3==0; b.wrong_admit=n%2;
+                if (n<100 && b.d.admission_valid_o) {
+                    b.require(!b.committed && !b.d.data_request_valid_o,"store bypassed prefill issue permission");
+                    b.coverage["store_issue_wait"]++;
+                }
+                return Input{};
+            });
+            b.require(b.regs[8]==0x87654321 && b.target==b.architectural
+                && b.coverage["store_commit"]==commits+2 && b.coverage["store_issue_wait"]>waits,"delayed store issue and clean ordering");
+            if (inject) {
+                b.require(b.cycles-start==admission_cycles,"external admission changed cached-store timing");
+                b.coverage["external_admission_ignored"]++;
+            } else admission_cycles=b.cycles-start;
+            b.coverage["store_permission_release"]++;
+        }
+        // a failed store refill traps before commitment, then retries the same pc.
+        for (unsigned width=0;width<3;width++) {
+            initialize(b); const unsigned offset=32-(1U<<width);
+            b.memory[4]=instruction(2,7,0,0,0x400); b.memory[5]=csr(0x305,1,7,0);
+            b.memory[6]=mem(true,width,0,1,2,int(offset));
+            b.memory[7]=mem(false,2,8,1,0,28); b.memory[8]=0x0000100f;
+            b.memory[9]=csr(0xb02,2,0,6);
+            b.memory[0x400/4]=csr(0x342,2,0,10); b.memory[0x404/4]=csr(0x343,2,0,11);
+            b.memory[0x408/4]=csr(0x341,2,0,12); b.memory[0x40c/4]=0x30200073;
+            b.fault_address=0x4000+offset;
+            const auto traps=b.traps, fills=b.coverage["dcache_fill"], commits=b.coverage["store_commit"];
+            b.reset();
+            for (unsigned n=0;n<1000 && !b.d.trap_valid_o;n++) {
+                b.data_latency=12; b.data_ready=n%4==0; b.tick();
+            }
+            b.require(b.d.trap_valid_o && !b.committed && b.pc==24,"store refill fault setup");
+            for (unsigned n=0;n<20;n++) {
+                b.tick();
+                b.require(b.d.trap_valid_o && b.d.memory_busy_o && !b.d.memory_committed_o
+                    && !b.d.retire_accept_o && !b.d.fatal_o && b.target==b.architectural,"held store refill fault");
+            }
+            run_until(b,40,[&](unsigned n) {
+                if (b.traps>traps) b.fault_address=UINT32_MAX;
+                b.data_ready=n%3==0; Input i; i.trap_ready=n%4==0; return i;
+            });
+            b.require(b.traps==traps+1 && b.regs[10]==7 && b.regs[11]==0x4000+offset && b.regs[12]==24
+                && b.coverage["store_commit"]==commits+1 && b.coverage["dcache_fill"]==fills+2
+                && b.target==b.architectural,"precise store fault and successful retry");
+            b.coverage["store_refill_retry"]++;
+        }
+        // cancellation must leave bytes unchanged, including after a completed admission.
+        for (unsigned stage=0;stage<6;stage++) for (bool reset:{false,true}) {
+            initialize(b); b.memory[4]=mem(true,2,0,1,2);
+            b.memory[0x800/4]=mem(false,2,8,1,0); b.memory[0x804/4]=0x0000100f;
+            b.memory[0x808/4]=csr(0xb02,2,0,6);
+            if (stage==5) b.fault_address=0x4000;
+            const uint32_t original=b.memory[0x4000/4];
+            b.reset(); b.data_ready=stage!=1; b.data_latency=12; b.issue_allowed=stage!=0;
+            bool reached=false;
+            for (unsigned n=0;n<1000 && !reached;n++) {
+                Input i; i.retire=b.prepared ? 0:3; b.tick(i);
+                reached=stage==0 ? b.prepared : stage==1 ? b.ext_offered : stage==2 ? b.accepted && !b.answered
+                    : stage==3 ? b.accepted && !b.answered && b.remaining==0
+                    : stage==4 ? b.prepared && bool(b.d.retire_valid_o) : bool(b.d.trap_valid_o);
+            }
+            b.require(reached && !b.committed,"store admission cancellation setup");
+            if (stage==4) for (unsigned n=0;n<20;n++) {
+                Input i; i.retire=0; b.tick(i);
+                b.require(b.d.memory_busy_o && b.d.admission_valid_o && !b.d.data_request_valid_o
+                    && !b.d.memory_committed_o,"store reservation under retirement stall");
+            }
+            if (reset) {
+                b.require(b.memory[0x4000/4]==original && b.target==b.architectural,"unretired store changed memory before reset");
+                b.reset(); b.fault_address=UINT32_MAX; run(b,20,rng);
+            } else {
+                Input i; i.retire=0; i.flush=true; i.target=0x800; b.tick(i);
+                b.fault_address=UINT32_MAX;
+                run(b,0x80c,rng);
+                b.require(b.regs[8]==original && b.target==b.architectural,"canceled store changed cache bytes");
+            }
+            b.coverage[std::string(reset ? "store_admission_reset_":"store_admission_cancel_")+std::to_string(stage)]++;
+        }
         // verify dirty eviction after store misses and stores to clean hits.
         for (unsigned order:{0u,1u}) for (unsigned slow:{0u,1u}) {
             initialize(b); unsigned at=4;

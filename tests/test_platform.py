@@ -27,6 +27,17 @@ class PlatformTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "power of two"):
             GENERATOR.validate(changed)
 
+    def test_store_refill_permissions(self) -> None:
+        for field in ("read", "idempotent"):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(self.config)
+                changed["memory"]["regions"][0][field] = False
+                with self.assertRaisesRegex(ValueError, "refills"):
+                    GENERATOR.validate(changed)
+        changed = copy.deepcopy(self.config)
+        changed["memory"]["regions"][0]["write"] = False
+        GENERATOR.validate(changed)
+
     def test_overlapping_regions_fail(self) -> None:
         changed = copy.deepcopy(self.config)
         changed["memory"]["regions"][1]["base"] = "0x00000020"

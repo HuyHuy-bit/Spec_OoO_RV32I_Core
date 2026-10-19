@@ -181,7 +181,7 @@ module fetch_execution_core #(parameter bit FRONTEND_FAULTS = 1, parameter bit T
     assign dcache_fatal = 1'b0;
     assign clean_done = 1'b0;
   end
-  control_flow_backend #(.SYSTEM_SERVICE(TRAP_SERVICE), .MEMORY_SERVICE(MEMORY_SERVICE)) backend (
+  control_flow_backend #(.SYSTEM_SERVICE(TRAP_SERVICE), .MEMORY_SERVICE(MEMORY_SERVICE), .PREFILL_STORES(DCACHE)) backend (
     .memory_issue_allowed_i(memory_issue_allowed_i && running), .admit_valid_i, .admit_id_i,
     .admission_valid_o, .admission_id_o, .admission_address_o, .admission_data_o, .admission_mask_o, .admission_size_o,
     .memory_prepare_o, .memory_busy_o, .memory_committed_o, .memory_irrevocable_o, .memory_fatal_o(backend_memory_fatal),
@@ -210,6 +210,8 @@ module fetch_execution_core #(parameter bit FRONTEND_FAULTS = 1, parameter bit T
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
     if (!rst_i) begin
+      assert (!(DCACHE && memory_busy_o) || sync_q == SYNC_IDLE)
+        else $fatal(1, "FETCH_CORE_ADMISSION_MAINTENANCE");
       assert (!flush || flush_ready_o) else $fatal(1, "FETCH_CORE_MMIO_FLUSH");
       assert (!drained || !memory_busy_o) else $fatal(1, "FETCH_CORE_MEMORY_DRAIN");
       assert (trap_accept_o == (trap_valid_o && trap_ready_i))

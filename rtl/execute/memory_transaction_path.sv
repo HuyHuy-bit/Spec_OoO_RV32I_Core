@@ -1,5 +1,5 @@
 `default_nettype none
-module memory_transaction_path (
+module memory_transaction_path #(parameter bit PREFILL_STORES = 0) (
   input wire clk_i, rst_i, recovery_i, kill_i,
   input wire desc_valid_i,
   output wire desc_take_o,
@@ -53,50 +53,81 @@ module memory_transaction_path (
   logic pending_q, load_uncached_q, load_offered_q;
   logic [1:0] load_size_q;
   logic [3:0] load_mask_q;
+  logic store_prefill_q, store_reserved_q;
+  logic [82:0] store_descriptor_q;
+  wire [82:0] store_descriptor = {id_i, address_i, write_data_i, byte_mask_i, size_i};
+  wire store_match = store_descriptor == store_descriptor_q;
+  wire store_admitted = store_reserved_q && store_match;
   wire active = !rst_i && !fatal_o;
   wire occupied = (|engine_busy) || port_busy || fatal_o;
   wire room = active && !occupied && !recovery_i && !kill_i;
   wire cancel = active && kill_i && !irrevocable_o;
-  wire launch_load = room && desc_valid_i && !store_i && load_ready;
-  wire launch_mmio = room && desc_valid_i && store_i && (uncached_i || fault_i) && mmio_ready;
-  wire cached_desc = room && desc_valid_i && store_i && !uncached_i && !fault_i;
+  wire launch_load = room && !store_prefill_q && desc_valid_i && !store_i && load_ready;
+  wire launch_mmio = room && !store_prefill_q && desc_valid_i && store_i && (uncached_i || fault_i) && mmio_ready;
+  wire cached_desc = room && desc_valid_i && store_i && !uncached_i && !fault_i
+    && (!PREFILL_STORES || store_admitted);
+  wire launch_prefill = PREFILL_STORES && room && !store_prefill_q && desc_valid_i
+    && store_i && !uncached_i && !fault_i && load_ready;
+  wire launch_read = launch_load || launch_prefill;
   wire can_reserve = active && pending_q && head_valid_i && issue_allowed_i && !kill_i && !recovery_i;
   wire result_head = head_valid_i && head_id_i == (load_valid ? load_id : mmio_id);
+
+  wire prefill_success = active && store_prefill_q && load_valid && !load_fault
+    && result_head && store_match && !cancel && !recovery_i && !response_valid_i;
+  wire visible_load = load_valid && (!store_prefill_q || load_fault);
 
   assign fatal_sources_o = rst_i ? 4'd0 : {port_fatal, engine_fatal};
   assign fatal_o = |fatal_sources_o;
   assign fatal_reason_o = rst_i ? 8'd0 : {port_reason, mmio_reason, cs_reason};
-  assign busy_o = !rst_i && occupied;
-  assign owner_valid_o = !rst_i && |engine_busy;
-  assign owner_id_o = engine_busy[0] ? load_owner : engine_busy[1] ? cs_owner : mmio_owner;
+  assign busy_o = !rst_i && (occupied || store_prefill_q);
+  assign owner_valid_o = !rst_i && ((|engine_busy) || store_prefill_q);
+  assign owner_id_o = engine_busy[0] ? load_owner : engine_busy[1] ? cs_owner : store_prefill_q ? store_descriptor_q[82:70] : mmio_owner;
   assign committed_o = engine_busy[1];
   assign irrevocable_o = !rst_i && (load_offered_q || mmio_irrevocable);
   assign reserve[0] = can_reserve && engine_busy[0] && head_id_i == load_owner;
   assign reserve[1] = request_valid[1];
   assign reserve[2] = can_reserve && engine_busy[2] && head_id_i == mmio_owner;
-  assign desc_take_o = launch_load || launch_mmio || commit_accept_o;
+  assign desc_take_o = launch_read || launch_mmio || commit_accept_o;
   assign commit_ready_o = active && !response_valid_i && cs_ready;
-  assign valid_o = active && !response_valid_i && !cancel && result_head && (load_valid || mmio_valid);
+  assign valid_o = active && !response_valid_i && !cancel && result_head && (visible_load || mmio_valid);
   assign id_o = valid_o ? (load_valid ? load_id : mmio_id) : 13'd0;
   assign address_o = valid_o ? (load_valid ? load_address : mmio_address) : 32'd0;
-  assign data_o = valid_o && load_valid ? load_data : 32'd0;
+  assign data_o = valid_o && load_valid && !store_prefill_q ? load_data : 32'd0;
   assign write_data_o = valid_o && mmio_valid ? mmio_data : 32'd0;
   assign size_o = valid_o ? (load_valid ? load_size_q : mmio_size) : 2'd0;
-  assign store_o = valid_o && mmio_valid;
+  assign store_o = valid_o && (mmio_valid || store_prefill_q);
   assign fault_o = valid_o && (load_valid ? load_fault : mmio_fault);
   assign byte_mask_o = valid_o && !fault_o ? (load_valid ? load_mask_q : mmio_mask) : 4'd0;
-  assign cause_o = valid_o ? (load_valid ? load_cause : mmio_cause) : 32'd0;
+  assign cause_o = valid_o ? (load_valid ? (store_prefill_q ? 32'd7 : load_cause) : mmio_cause) : 32'd0;
   assign trap_value_o = valid_o ? (load_valid ? load_trap : mmio_trap) : 32'd0;
 
-  // The engines own occupancy; pending tracks only an ungranted bus reservation.
+  // reserve the serial path from prefill through store commit.
+  always_ff @(posedge clk_i) begin
+    if (rst_i) begin
+      store_prefill_q <= 0;
+      store_reserved_q <= 0;
+    end else if (active) begin
+      if (launch_prefill) begin
+        store_prefill_q <= 1;
+        store_descriptor_q <= store_descriptor;
+      end
+      if (prefill_success) store_reserved_q <= 1;
+      if (cancel || commit_accept_o || (take_i && valid_o && store_prefill_q)) begin
+        store_prefill_q <= 0;
+        store_reserved_q <= 0;
+      end
+    end
+  end
+
+  // pending tracks an ungranted bus reservation; the engines own bus occupancy.
   always_ff @(posedge clk_i) begin
     if (rst_i) begin
       pending_q <= 0;
       load_offered_q <= 0;
     end else if (active) begin
       if (cancel || grant[0] || grant[2]) pending_q <= 0;
-      if (launch_load || launch_mmio) pending_q <= !fault_i;
-      if (launch_load) begin
+      if (launch_read || launch_mmio) pending_q <= !fault_i;
+      if (launch_read) begin
         load_uncached_q <= uncached_i;
         load_size_q <= size_i;
         load_mask_q <= byte_mask_i;
@@ -107,12 +138,12 @@ module memory_transaction_path (
   end
 
   load_transaction load_engine (
-    .clk_i, .rst_i, .kill_i(cancel), .launch_i(launch_load), .ready_o(load_ready),
+    .clk_i, .rst_i, .kill_i(cancel), .launch_i(launch_read), .ready_o(load_ready),
     .id_i, .address_i, .size_i, .unsigned_i, .uncached_i, .head_only_i, .fault_i, .cause_i, .trap_value_i,
     .issue_allowed_i(grant[0]), .head_valid_i, .head_id_i,
     .request_valid_o(request_valid[0]), .request_ready_i(request_ready[0]), .request_o(requests[0]),
     .response_valid_i(response_valid[0]), .response_ready_o(response_ready[0]), .response_i(response),
-    .valid_o(load_valid), .take_i(take_i && valid_o && load_valid),
+    .valid_o(load_valid), .take_i(prefill_success || (take_i && valid_o && load_valid)),
     .id_o(load_id), .owner_id_o(load_owner), .address_o(load_address), .data_o(load_data),
     .cause_o(load_cause), .trap_value_o(load_trap), .fault_o(load_fault),
     .busy_o(engine_busy[0]), .irrevocable_o(unused[0]), .fatal_o(engine_fatal[0])
@@ -120,7 +151,8 @@ module memory_transaction_path (
   committed_store committed_engine (
     .clk_i, .rst_i, .recovery_i(recovery_i || kill_i), .desc_valid_i(cached_desc),
     .store_i, .uncached_i, .fault_i, .id_i, .address_i, .write_data_i, .byte_mask_i, .size_i,
-    .head_valid_i, .admit_valid_i, .head_id_i, .admit_id_i,
+    .head_valid_i, .admit_valid_i(PREFILL_STORES ? store_admitted : admit_valid_i),
+    .head_id_i, .admit_id_i(PREFILL_STORES ? store_descriptor_q[82:70] : admit_id_i),
     .commit_ready_o(cs_ready), .commit_i(commit_i && commit_ready_o), .accept_o(commit_accept_o),
     .request_valid_o(request_valid[1]), .request_ready_i(request_ready[1]), .request_o(requests[1]),
     .response_valid_i(response_valid[1]), .response_ready_o(response_ready[1]), .response_i(response),
@@ -150,6 +182,12 @@ module memory_transaction_path (
   wire [3:0] expected_load_mask = fault_i ? 4'd0 :
     ((size_i == 0 ? 4'b0001 : size_i == 1 ? 4'b0011 : 4'b1111) << address_i[1:0]);
   always_ff @(posedge clk_i) if (!rst_i) begin
+    assert (!store_reserved_q || (store_prefill_q && !(|engine_busy) && !port_busy))
+      else $fatal(1, "MEM_PATH_STORE_RESERVATION");
+    assert (!(PREFILL_STORES && commit_accept_o) || (store_reserved_q && store_match))
+      else $fatal(1, "MEM_PATH_STORE_ADMISSION");
+    assert (!(store_prefill_q && desc_valid_i && !kill_i) || store_match)
+      else $fatal(1, "MEM_PATH_STORE_DESCRIPTOR");
     assert (!(kill_i && take_i)) else $fatal(1, "MEM_PATH_KILL_TAKE");
     assert (!launch_load || byte_mask_i == expected_load_mask) else $fatal(1, "MEM_PATH_LOAD_MASK");
     assert (!take_i || valid_o) else $fatal(1, "MEM_PATH_TAKE");
