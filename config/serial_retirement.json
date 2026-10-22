@@ -7,9 +7,9 @@
     "rtl/backend/rename_state.sv",
     "rtl/backend/rename_checkpoints.sv",
     "rtl/backend/rename_recovery.sv",
-    "rtl/backend/rob_two_wide.sv",
+    "rtl/backend/reorder_buffer.sv",
     "rtl/backend/prf_4r2w.sv",
-    "rtl/backend/backend_two_wide.sv"
+    "rtl/backend/rename_rob.sv"
   ],
   "seeds": [
     1,

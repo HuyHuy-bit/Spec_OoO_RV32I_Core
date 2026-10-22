@@ -2,4 +2,4 @@
 lint_off -rule UNUSEDPARAM -file "*platform_pkg.sv"
 lint_off -rule UNUSEDPARAM -file "*memory_protocol_pkg.sv"
 lint_off -rule UNUSEDPARAM -file "*commit_event_pkg.sv"
-lint_off -rule UNUSEDSIGNAL -file "*execute_single.sv" -match "*decoded_i*"
+lint_off -rule UNUSEDSIGNAL -file "*execute_unit.sv" -match "*decoded_i*"

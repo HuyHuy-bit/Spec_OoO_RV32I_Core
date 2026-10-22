@@ -4,18 +4,18 @@
   "sources": [
     "rtl/generated/platform_pkg.sv",
     "rtl/generated/commit_event_pkg.sv",
-    "rtl/core/single_lane_pkg.sv",
-    "rtl/frontend/decode_single.sv",
+    "rtl/core/core_pkg.sv",
+    "rtl/frontend/decoder.sv",
     "rtl/backend/rename_bundle.sv",
     "rtl/backend/rename_state.sv",
     "rtl/backend/rename_checkpoints.sv",
     "rtl/backend/rename_recovery.sv",
-    "rtl/backend/rob_two_wide.sv",
+    "rtl/backend/reorder_buffer.sv",
     "rtl/backend/prf_4r2w.sv",
-    "rtl/backend/backend_two_wide.sv",
-    "rtl/core/csr_two_wide.sv",
-    "rtl/core/head_system_controller.sv",
-    "verif/unit/head_system_backend.sv"
+    "rtl/backend/rename_rob.sv",
+    "rtl/system/csr_unit.sv",
+    "rtl/system/head_system_controller.sv",
+    "verif/system/head_system_backend.sv"
   ],
   "lint_config": "config/head_system_backend.vlt",
   "seeds": [

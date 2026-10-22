@@ -45,7 +45,7 @@ def build(sources: list[str], directory: Path, *, mapped: bool = False) -> Path:
         "verilator", "--cc", "--exe", "--build", "--build-jobs", "2", "--Wall", "--assert",
         "--x-initial", "unique", "--top-module", TOP, "--Mdir", str(directory / "obj_dir"),
         *flags, "-CFLAGS", "-std=c++17 -Wall -Wextra -Werror", *sources,
-        str(ROOT / "verif/unit/a1_backend_probe_tb.cpp"), "-o", "probe_check",
+        str(ROOT / "verif/backend/a1_backend_probe_tb.cpp"), "-o", "probe_check",
     ], directory / "build.log")
     return directory / "obj_dir/probe_check"
 
@@ -148,7 +148,7 @@ def main() -> int:
     expected = next(tool["expected_first_line"] for tool in lock["tools"] if tool["name"] == "verilator")
     if run(["verilator", "--version"], OUT / "verilator_version.log").strip() != expected:
         raise RuntimeError("Verilator does not match config/toolchain.lock")
-    inputs = SOURCES + ["verif/unit/a1_backend_probe_tb.cpp", "tools/run_a1_probe.py",
+    inputs = SOURCES + ["verif/backend/a1_backend_probe_tb.cpp", "tools/run_a1_probe.py",
                        "config/toolchain.lock", "config/synthesis.lock", "config/prf_contract.json"]
     receipt = {"schema": 1, "inputs_sha256": {path: digest(ROOT / path) for path in inputs},
                "timing_evaluated": False, "cell_library": None,

@@ -55,7 +55,7 @@ module rename_recovery_ownership (
     .checkpoint_released_o(released), .resolve_accept_o(resolve_accept), .branch_recover_o(branch_recover), .reclaim_o(reclaim)
   );
 
-  // Reconstruct ownership and branch age from instructions, without DUT snapshots or histories.
+  // reconstruct ownership and branch age from instructions, without dut snapshots or histories.
   always_comb begin
     map = committed;
     owned = 0;
@@ -261,7 +261,7 @@ module rename_recovery_ownership (
     end
   end
 
-  // These checked state relations strengthen induction without assuming DUT correctness.
+  // these checked state relations strengthen induction without assuming dut correctness.
   always @(posedge clk)
     if (past_valid) reference_zero: assert (committed[5:0] == 0);
   for (genvar arch = 1; arch < 32; arch++) begin : arch_invariants

@@ -136,7 +136,7 @@ def main() -> None:
     abc.write_text(f'set_driving_cell {config["abc_driver"]}\nset_load {config["abc_load_ff"]}\n')
     inputs = SOURCES + ["config/a1_timing.json", "config/a1_timing.lock", "config/synthesis.lock",
                        "config/toolchain.lock", "synth/a1_timing.tcl", "tools/run_a1_timing.py",
-                       "tools/run_a1_probe.py", "tools/fetch_a1_timing.py", "verif/unit/a1_backend_probe_tb.cpp",
+                       "tools/run_a1_probe.py", "tools/fetch_a1_timing.py", "verif/backend/a1_backend_probe_tb.cpp",
                        "config/prf_contract.json"]
     results = {"schema": 1, "inputs_sha256": {p: digest(ROOT / p) for p in inputs},
                "intent": config, "library": lock["library"], "opensta": lock["opensta"],

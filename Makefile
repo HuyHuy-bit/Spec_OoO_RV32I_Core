@@ -4,31 +4,28 @@ ACT4_CHECKOUT ?= out/deps/riscv-arch-test-4.0.0
 ACT4_SAIL ?= out/deps/sail-riscv-0.10/bin/sail_riscv_sim
 OSS_CAD_SUITE ?= $(HOME)/tools/oss-cad-suite-20260905/oss-cad-suite
 
-.PHONY: doctor platform-generate platform-check event-generate event-check memory-generate memory-check lockstep-check act4-check act4-upstream-check prf-check prf-mutation-check a1-probe-check a1-synth-check check-fast check nightly reference-check
+.PHONY: doctor platform-generate platform-check event-generate event-check memory-protocol-generate memory-protocol-check lockstep-check act4-check act4-upstream-check prf-check prf-mutation-check a1-probe-check a1-synth-check check-fast check nightly reference-check
 .PHONY: a1-timing-fetch a1-timing-check
 .PHONY: a1-check
-.PHONY: single-lane-check single-lane-synth-check
-.PHONY: act4-tools act4-core-check act4-fetched-check
-.PHONY: sail-log-check sail-differential-check sail-fetched-differential-check spike-fetched-differential-check
-.PHONY: architectural-slice-check architectural-slice-evidence-check architectural-slice-checker-test
+.PHONY: act4-tools act4-fetched-check
+.PHONY: sail-log-check sail-fetched-differential-check spike-fetched-differential-check
 .PHONY: assert-portability
-.PHONY: rename-ownership-check rename-recovery-ownership-check
-.PHONY: backend-two-wide-check
+.PHONY: rename-recovery-ownership-check
+.PHONY: rename-rob-check
 .PHONY: issue-queue-check
 .PHONY: issue-backend-check
-.PHONY: integer-backend-check control-flow-backend-check fetch-two-wide-check fetch-execution-core-check frontend-faults-check
+.PHONY: execution-backend-check fetch-unit-check cpu-top-check frontend-faults-check
 .PHONY: system-core-check
 .PHONY: head-dispatch-check
 .PHONY: unit-runner-check
 .PHONY: head-system-backend-check
 .PHONY: serial-retirement-check
 .PHONY: head-trap-core-check
-.PHONY: csr-two-wide-check
-.PHONY: rob-two-wide-check
+.PHONY: csr-unit-check
+.PHONY: reorder-buffer-check
 .PHONY: rename-bundle-check
 .PHONY: rename-state-check rename-checkpoints-check rename-recovery-check
-.PHONY: formal-readiness-check formal-readiness-evidence-check formal-readiness-checker-test
-.PHONY: occupancy-check occupancy-sweep dense-memory-check dense-memory-rtl-check cache-model-check two-wide-check two-wide-evidence-check two-wide-checker-test
+.PHONY: occupancy-check occupancy-sweep two-wide-check two-wide-evidence-check two-wide-checker-test
 
 doctor:
 	@python3 tools/doctor.py --lock config/toolchain.lock --profile "$(PROFILE)"
@@ -36,14 +33,11 @@ doctor:
 assert-portability:
 	@python3 tools/run_assert_portability.py --suite "$(OSS_CAD_SUITE)"
 
-rename-ownership-check:
-	@python3 tools/run_rename_ownership.py --suite "$(OSS_CAD_SUITE)"
-
 rename-recovery-ownership-check:
 	@python3 tools/run_rename_recovery_ownership.py --suite "$(OSS_CAD_SUITE)"
 
-backend-two-wide-check:
-	@python3 tools/run_unit.py backend_two_wide --suite "$(OSS_CAD_SUITE)"
+rename-rob-check:
+	@python3 tools/run_unit.py rename_rob --suite "$(OSS_CAD_SUITE)"
 
 issue-queue-check:
 	@python3 tools/run_unit.py issue_queue --suite "$(OSS_CAD_SUITE)"
@@ -77,7 +71,23 @@ load-transaction-check:
 
 .PHONY: load-transaction-formal-check
 load-transaction-formal-check:
-	@python3 tools/run_rename_ownership.py --profile load_transaction_handshake --suite "$(OSS_CAD_SUITE)"
+	@python3 tools/run_memory_formal.py --profile load_transaction_handshake --suite "$(OSS_CAD_SUITE)"
+
+.PHONY: store-forward-check
+store-forward-check:
+	@python3 tools/run_memory_formal.py --profile store_forward --suite "$(OSS_CAD_SUITE)"
+
+.PHONY: cpi-check
+cpi-check:
+	@python3 tools/run_cpi.py
+
+.PHONY: coremark-check
+coremark-check:
+	@python3 tools/run_coremark.py
+
+.PHONY: load-store-queue-check
+load-store-queue-check:
+	@python3 tools/run_memory_formal.py --profile load_store_queue --suite "$(OSS_CAD_SUITE)"
 
 .PHONY: load-store-prepare-check
 load-store-prepare-check:
@@ -86,10 +96,6 @@ load-store-prepare-check:
 .PHONY: memory-core-check
 memory-core-check:
 	@python3 tools/run_unit.py memory_core --suite "$(OSS_CAD_SUITE)"
-
-.PHONY: cached-core-check
-cached-core-check:
-	@python3 tools/run_unit.py cached_core --suite "$(OSS_CAD_SUITE)"
 
 system-core-check:
 	@python3 tools/run_unit.py system_core --suite "$(OSS_CAD_SUITE)"
@@ -109,26 +115,23 @@ serial-retirement-check:
 head-trap-core-check:
 	@python3 tools/run_unit.py head_trap_core --suite "$(OSS_CAD_SUITE)"
 
-csr-two-wide-check:
-	@python3 tools/run_unit.py csr_two_wide --suite "$(OSS_CAD_SUITE)"
+csr-unit-check:
+	@python3 tools/run_unit.py csr_unit --suite "$(OSS_CAD_SUITE)"
 
 frontend-faults-check:
 	@python3 tools/run_unit.py frontend_faults --suite "$(OSS_CAD_SUITE)"
 
-fetch-execution-core-check:
-	@python3 tools/run_unit.py fetch_execution_core --suite "$(OSS_CAD_SUITE)"
+cpu-top-check:
+	@python3 tools/run_unit.py cpu_top --suite "$(OSS_CAD_SUITE)"
 
-fetch-two-wide-check:
-	@python3 tools/run_unit.py fetch_two_wide --suite "$(OSS_CAD_SUITE)"
+fetch-unit-check:
+	@python3 tools/run_unit.py fetch_unit --suite "$(OSS_CAD_SUITE)"
 
-control-flow-backend-check:
-	@python3 tools/run_unit.py control_flow_backend --suite "$(OSS_CAD_SUITE)"
+execution-backend-check:
+	@python3 tools/run_unit.py execution_backend --suite "$(OSS_CAD_SUITE)"
 
-integer-backend-check:
-	@python3 tools/run_unit.py integer_backend --suite "$(OSS_CAD_SUITE)"
-
-rob-two-wide-check:
-	@python3 tools/run_unit.py rob_two_wide --suite "$(OSS_CAD_SUITE)"
+reorder-buffer-check:
+	@python3 tools/run_unit.py reorder_buffer --suite "$(OSS_CAD_SUITE)"
 
 rename-bundle-check:
 	@python3 tools/run_unit.py rename_bundle --suite "$(OSS_CAD_SUITE)"
@@ -141,24 +144,6 @@ rename-checkpoints-check:
 
 rename-recovery-check:
 	@python3 tools/run_unit.py rename_recovery --suite "$(OSS_CAD_SUITE)"
-
-formal-readiness-check:
-	@python3 tools/run_formal_readiness.py --suite "$(OSS_CAD_SUITE)"
-
-formal-readiness-evidence-check:
-	@python3 tools/check_formal_readiness.py
-
-formal-readiness-checker-test:
-	@python3 -m unittest -v tests/test_formal_readiness.py
-
-architectural-slice-check:
-	@python3 tools/run_architectural_slice.py
-
-architectural-slice-evidence-check:
-	@python3 tools/check_architectural_slice.py
-
-architectural-slice-checker-test:
-	@python3 -m unittest -v tests/test_architectural_slice.py
 
 platform-generate:
 	@python3 tools/gen_platform.py --input config/platform.yaml --write
@@ -174,10 +159,10 @@ event-check:
 	@python3 tools/gen_commit_event.py --input config/commit_event.yaml --check
 	@python3 -m unittest -v tests/test_commit_event.py
 
-memory-generate:
+memory-protocol-generate:
 	@python3 tools/gen_memory_protocol.py --input config/memory_protocol.yaml --write
 
-memory-check:
+memory-protocol-check:
 	@python3 tools/gen_memory_protocol.py --input config/memory_protocol.yaml --check
 	@python3 -m unittest -v tests/test_memory_protocol.py
 
@@ -192,11 +177,8 @@ act4-check:
 act4-tools:
 	@python3 tools/act4_tools.py --checkout "$(ACT4_CHECKOUT)"
 
-act4-core-check:
-	@python3 tools/run_act4_core.py --checkout "$(ACT4_CHECKOUT)" --sail "$(ACT4_SAIL)"
-
 act4-fetched-check:
-	@python3 tools/run_act4_core.py --dut fetched --checkout "$(ACT4_CHECKOUT)" --sail "$(ACT4_SAIL)"
+	@python3 tools/run_act4_core.py --checkout "$(ACT4_CHECKOUT)" --sail "$(ACT4_SAIL)"
 
 act4-upstream-check:
 	@python3 tools/check_act4.py --checkout "$(ACT4_CHECKOUT)" --sail "$(ACT4_SAIL)"
@@ -226,49 +208,24 @@ a1-check:
 	@$(MAKE) --no-print-directory a1-synth-check a1-timing-check
 	@python3 tools/check_a1.py --self-test
 
-single-lane-check:
-	@python3 tools/run_single_lane.py
-
 occupancy-check:
 	@python3 -m unittest -v tests/test_occupancy_model.py
 
 occupancy-sweep:
 	@python3 -m model.occupancy
 
-dense-memory-check:
-	@python3 -m unittest -v tests/test_dense_memory.py
+.PHONY: branch-predictor-check
+branch-predictor-check:
+	@verilator --lint-only -Wall rtl/frontend/branch_predictor.sv
+	@python3 -m unittest -v tests/test_branch_predictor_rtl.py
 
-dense-memory-rtl-check:
-	@OSS_CAD_SUITE="$(OSS_CAD_SUITE)" python3 -m unittest -v tests/test_dense_memory_rtl.py
+.PHONY: load-store-unit-check
+load-store-unit-check:
+	@python3 -m unittest -v tests/test_load_store_unit_rtl.py
 
-.PHONY: storage-pilot-check storage-pilot-synth storage-pilot-physical storage-pilot-sta
-storage-pilot-check:
-	@python3 tools/run_storage_pilot.py --mutations
-
-storage-pilot-synth:
-	@python3 tools/run_storage_pilot.py --synth --mutations --suite "$(OSS_CAD_SUITE)"
-
-storage-pilot-physical:
-	@python3 tools/run_storage_pilot.py --physical
-
-storage-pilot-sta:
-	@test -n "$(STORAGE_SUMMARY)" || (echo 'Set STORAGE_SUMMARY to the retained physical summary.json'; exit 1)
-	@python3 tools/run_storage_pilot.py --physical-sta-from "$(STORAGE_SUMMARY)"
-
-cache-model-check:
-	@python3 -m unittest -v tests/test_cache_model.py
-
-L1_CACHE_SOURCES = rtl/generated/memory_protocol_pkg.sv rtl/memory/g0/dense_memory_1rw.sv \
-	rtl/memory/dense_memory_1rw_array.sv rtl/memory/l1_cache.sv
-
-l1-cache-rtl-check:
-	@set -e; for w in 1 0; do \
-	  verilator --lint-only -Wall -Wno-UNUSEDPARAM --top-module l1_cache -GWRITABLE=$$w $(L1_CACHE_SOURCES); \
-	  "$(OSS_CAD_SUITE)/bin/yosys" -Q -T -q -m slang \
-	    -p "read_slang --top l1_cache -GWRITABLE=$$w $(L1_CACHE_SOURCES); synth -top l1_cache"; \
-	  echo "l1_cache WRITABLE=$$w: lint and synth clean"; \
-	done
-	@python3 -m unittest -v tests/test_l1_cache_rtl.py
+.PHONY: load-store-queue-random-check
+load-store-queue-random-check:
+	@python3 -m unittest -v tests/test_load_store_queue_rtl.py
 
 two-wide-check:
 	@python3 tools/check_two_wide.py
@@ -282,19 +239,13 @@ two-wide-checker-test:
 sail-log-check:
 	@python3 -m unittest -v tests/test_sail_log.py
 
-sail-differential-check:
+sail-fetched-differential-check:
 	@python3 tools/run_sail_differential.py --sail "$(ACT4_SAIL)"
 
-sail-fetched-differential-check:
-	@python3 tools/run_sail_differential.py --dut fetched --sail "$(ACT4_SAIL)"
-
 spike-fetched-differential-check:
-	@python3 tools/run_sail_differential.py --dut fetched --reference spike --spike "$(LOCKSTEP_SPIKE)"
+	@python3 tools/run_sail_differential.py --reference spike --spike "$(LOCKSTEP_SPIKE)"
 
-single-lane-synth-check:
-	@python3 tools/run_single_lane.py --synth --mutations --suite "$(OSS_CAD_SUITE)"
-
-check-fast: unit-runner-check platform-check event-check memory-check lockstep-check act4-check prf-check a1-probe-check single-lane-check sail-log-check occupancy-check dense-memory-check cache-model-check two-wide-checker-test architectural-slice-checker-test
+check-fast: branch-predictor-check load-store-unit-check load-store-queue-random-check unit-runner-check platform-check event-check memory-protocol-check lockstep-check act4-check prf-check a1-probe-check sail-log-check occupancy-check two-wide-checker-test
 	@python3 tools/check_s0.py
 	@git diff --check
 
@@ -304,3 +255,17 @@ nightly: check reference-check
 
 reference-check:
 	@$(MAKE) --no-print-directory -C verif/reference/rv32i check
+
+.PHONY: early-load-core-check
+early-load-core-check:
+	@python3 tools/run_sail_differential.py --config early_load_core --sail "$(ACT4_SAIL)"
+
+# Subsystem gates, ordered like the pipeline. check-all runs every one (hours); check stays the quick tier.
+.PHONY: frontend-check backend-check execute-check memory-check system-check core-check check-all
+frontend-check: branch-predictor-check fetch-unit-check
+backend-check: rename-bundle-check rename-state-check rename-checkpoints-check rename-recovery-check rename-recovery-ownership-check reorder-buffer-check rename-rob-check serial-retirement-check issue-queue-check issue-backend-check prf-check prf-mutation-check
+execute-check: execution-backend-check
+memory-check: load-store-unit-check load-store-queue-check load-store-queue-random-check store-forward-check load-store-prepare-check load-transaction-check load-transaction-formal-check committed-store-check mmio-store-check data-port-check memory-path-check head-memory-check
+system-check: csr-unit-check head-system-backend-check head-dispatch-check
+core-check: cpu-top-check frontend-faults-check head-trap-core-check system-core-check memory-core-check act4-fetched-check sail-fetched-differential-check spike-fetched-differential-check early-load-core-check
+check-all: check frontend-check backend-check execute-check memory-check system-check core-check

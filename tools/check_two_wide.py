@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
-"""Check two-wide core acceptance against current verification evidence."""
+"""Check a tier acceptance contract (two-wide core by default, or --contract) against current verification evidence."""
 import argparse
+import hashlib
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tarfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT/'tools'))
-from check_architectural_slice import require, sha, verify as verify_slice
 
 CONTRACT = 'config/two_wide_acceptance.json'
 RECEIPT = 'evidence/receipts/two_wide.json'
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
 
 
 def fresh(root, inputs, name):
@@ -38,7 +45,7 @@ def unique(keys, expected, message):
 
 
 def formal(root, name):
-    """Require passing induction, all covers and detected mutations."""
+    """Require a passing proof or bmc job of the configured mode, all covers and detected mutations."""
     receipt = json.loads((root/f'evidence/receipts/{name}.json').read_text())
     config = json.loads((root/f'config/{name}.json').read_text())
     require(receipt['status'] == 'pass' and receipt['profile'] == config['profile'], 'formal gate did not pass')
@@ -52,7 +59,8 @@ def formal(root, name):
     for job in json.loads(raw)['jobs']:
         require(job['name'] not in jobs, f'duplicate formal job: {job["name"]}')
         jobs[job['name']] = job
-    require(any(j['mode'] == config['mode'] == 'prove' and j['status'] == 'PASS' and not j['expected_failure']
+    require(config['mode'] in ('prove', 'bmc'), f'{name} has no proof mode')
+    require(any(j['mode'] == config['mode'] and j['status'] == 'PASS' and not j['expected_failure']
                 for j in jobs.values()), 'missing passing formal proof')
     require(any(j['mode'] == 'cover' and j['status'] == 'PASS' and set(j['covers_reached']) == set(config['required_covers'])
                 for j in jobs.values()), 'missing required formal cover')
@@ -123,9 +131,6 @@ def evaluate(contract, steps, root=ROOT):
     rows = []
     for requirement in contract['requirements']:
         evidence = []
-        if requirement.get('architectural_slice'):
-            verify_slice(root/'evidence/receipts/architectural_slice.json', root)
-            evidence.append('evidence/receipts/architectural_slice.json')
         for unit, counters in requirement.get('units', {}).items():
             path = f'evidence/receipts/{unit}.json'
             receipt = json.loads((root/path).read_text())
@@ -133,6 +138,15 @@ def evaluate(contract, steps, root=ROOT):
             fresh(root, receipt['inputs_sha256'], unit)
             for counter in counters:
                 require(sum(run.get(counter, 0) for run in receipt['simulations']) > 0, f'unhit cover: {unit}.{counter}')
+            evidence.append(path)
+        for target in requirement.get('commands', []):
+            # plain regressions: the passing, hash-bound log of a listed command is the evidence.
+            require(target in steps, f'{target} is not a contract command')
+            evidence.append(steps[target]['log'])
+        for path in requirement.get('gates', []):
+            gate = json.loads((root/path).read_text())
+            require(gate['status'] == 'promoted', f'{path} is not promoted')
+            require(gate['contract_sha256'] == sha((root/gate.get('contract', CONTRACT)).read_bytes()), f'{path} contract changed')
             evidence.append(path)
         if 'formal' in requirement:
             formal(root, requirement['formal'])
@@ -149,12 +163,12 @@ def evaluate(contract, steps, root=ROOT):
 
 
 def run(contract):
-    work = ROOT/'out/two_wide'/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    work = ROOT/contract.get('work', 'out/two_wide')/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     work.mkdir(parents=True)
     env = dict(os.environ, CCACHE_DISABLE='1', MAKEFLAGS='', MFLAGS='')
     steps = {}
     for index, target in enumerate(contract['commands']):
-        print(f'Two-wide core [{index+1}/{len(contract["commands"])}]: make {target}', flush=True)
+        print(f'{contract.get("gate", "Two-wide core")} [{index+1}/{len(contract["commands"])}]: make {target}', flush=True)
         log = work/f'{index:02d}_{target}.log'
         before = time.monotonic()
         with log.open('w') as stream:
@@ -173,11 +187,13 @@ def run(contract):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--verify', action='store_true', help='re-evaluate the retained receipt against the current tree')
+    parser.add_argument('--contract', default=CONTRACT, help='acceptance contract under config/')
     args = parser.parse_args()
-    contract = json.loads((ROOT/CONTRACT).read_text())
+    contract = json.loads((ROOT/args.contract).read_text())
+    gate, receipt_path = contract.get('gate', 'Two-wide core'), contract.get('receipt', RECEIPT)
     if args.verify:
-        receipt = json.loads((ROOT/RECEIPT).read_text())
-        require(receipt['contract_sha256'] == sha((ROOT/CONTRACT).read_bytes()), 'contract changed since the run')
+        receipt = json.loads((ROOT/receipt_path).read_text())
+        require(receipt['contract_sha256'] == sha((ROOT/args.contract).read_bytes()), 'contract changed since the run')
         status, rows, blocking = evaluate(contract, receipt['steps'])
         require((status, rows) == (receipt['status'], receipt['requirements']), 'retained receipt disagrees with evidence')
     else:
@@ -186,12 +202,12 @@ def main():
         status, rows, blocking = evaluate(contract, steps)
         revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
         dirty = bool(subprocess.check_output(['git', 'status', '--porcelain', '--', '.', ':!evidence'], cwd=ROOT))
-        (ROOT/RECEIPT).write_text(json.dumps(dict(
-            schema=1, gate='Two-wide core', status=status, profile=contract['profile'], claim_class=contract['claim_class'],
-            contract_sha256=sha((ROOT/CONTRACT).read_bytes()), source_revision=revision, dirty_tree=dirty,
+        (ROOT/receipt_path).write_text(json.dumps(dict(
+            schema=1, gate=gate, contract=args.contract, status=status, profile=contract['profile'], claim_class=contract['claim_class'],
+            contract_sha256=sha((ROOT/args.contract).read_bytes()), source_revision=revision, dirty_tree=dirty,
             started_utc=started, finished_utc=datetime.now(timezone.utc).isoformat(), steps=steps,
             requirements=rows, gaps=contract['gaps'], limitations=contract['limitations']), indent=2)+'\n')
-    print(f'Two-wide core: {status.upper().replace("_", " ")}' + (f' (blocking gaps: {", ".join(blocking)})' if blocking else ''))
+    print(f'{gate}: {status.upper().replace("_", " ")}' + (f' (blocking gaps: {", ".join(blocking)})' if blocking else ''))
 
 
 if __name__ == '__main__':

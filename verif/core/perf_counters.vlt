@@ -1,0 +1,13 @@
+`verilator_config
+// Bench-only: keeps the signals the perf activity counters sample (fetched_core_tb.cpp) visible under fixed names.
+public_flat_rd -module "cpu_top" -var "branch_redirect"
+public_flat_rd -module "execution_backend" -var "issue_o"
+public_flat_rd -module "execution_backend" -var "completion_id_o"
+public_flat_rd -module "execution_backend" -var "resolve_accept_o"
+public_flat_rd -module "execution_backend" -var "head_read"
+public_flat_rd -module "execution_backend" -var "serial_accept"
+public_flat_rd -module "reorder_buffer" -var "head_q"
+public_flat_rd -module "reorder_buffer" -var "pc_q"
+public_flat_rd -module "issue_queue" -var "valid_q"
+public_flat_rd -module "load_store_unit" -var "launch_memory"
+public_flat_rd -module "load_store_unit" -var "launch_forward"

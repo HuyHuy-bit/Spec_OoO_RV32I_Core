@@ -1,22 +1,26 @@
 `default_nettype none
+// one-entry branch/jump/alu producer (issue port 0): executes, resolves the prediction, then completes.
 module control_flow_pipeline (
-  input wire clk_i, rst_i, flush_i,
-  input wire launch_i,
+  // inputs
+  input  wire clk_i, rst_i, flush_i,
+  input  wire launch_i,
+  input  wire [12:0] id_i,
+  input  wire [31:0] instruction_i, pc_i, source1_i, source2_i,
+  input  wire predicted_taken_i,
+  input  wire [31:0] predicted_pc_i,
+  input  wire resolve_take_i,
+  input  wire take_i,
+
+  // outputs
   output wire ready_o, busy_o,
-  input wire [12:0] id_i,
-  input wire [31:0] instruction_i, pc_i, source1_i, source2_i,
-  input wire predicted_taken_i,
-  input wire [31:0] predicted_pc_i,
-  output wire valid_o,
-  output logic [12:0] id_o,
-  output commit_event_pkg::commit_event_t event_o,
-  input wire take_i,
   output wire resolve_valid_o,
   output logic taken_o, mispredict_o,
   output wire [31:0] next_pc_o,
-  input wire resolve_take_i
+  output wire valid_o,
+  output logic [12:0] id_o,
+  output commit_event_pkg::commit_event_t event_o
 );
-  import single_lane_pkg::*;
+  import core_pkg::*;
   import commit_event_pkg::*;
   decoded_t decoded;
   wire [31:0] result, next_pc, cause, trap_value;
@@ -31,14 +35,16 @@ module control_flow_pipeline (
   assign valid_o = busy_o && (!cfi_q || event_o.trap || resolved_q);
   assign next_pc_o = event_o.pc_after;
 
-  decode_single decode (.instruction_i, .decoded_o(decoded));
-  execute_single execute (
+  // decode and execution datapath
+  decoder decode (.instruction_i, .decoded_o(decoded));
+  execute_unit execute (
     .decoded_i(decoded), .pc_i, .instruction_i, .source1_i, .source2_i,
     .csr_value_i(32'd0), .mepc_i(32'd0), .csr_legal_i(1'b0),
     .result_o(result), .next_pc_o(next_pc), .address_o(),
     .trap_o(execute_trap), .cause_o(cause), .trap_value_o(trap_value), .taken_o(taken)
   );
 
+  // completion event construction
   always_comb begin
     built = '0;
     built.valid = 1;
@@ -61,7 +67,8 @@ module control_flow_pipeline (
     end
   end
 
-  // Resolution is acknowledged once; the result waits for a later completion grant.
+  // prediction resolution and result holding
+  // resolution is acknowledged once; the result waits for a later completion grant.
   always_ff @(posedge clk_i) begin
     if (rst_i || flush_i) begin
       pending_q <= 0;
@@ -82,6 +89,7 @@ module control_flow_pipeline (
     end
   end
 
+  // checks
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
     if (!rst_i && !flush_i) begin

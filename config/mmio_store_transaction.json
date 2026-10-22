@@ -3,9 +3,9 @@
   "profile": "single_outstanding_mmio_store_transaction",
   "sources": [
     "rtl/generated/memory_protocol_pkg.sv",
-    "rtl/execute/mmio_store_transaction.sv"
+    "rtl/memory/mmio_store_transaction.sv"
   ],
-  "lint_config": "config/fetch_two_wide.vlt",
+  "lint_config": "config/fetch_unit.vlt",
   "seeds": [
     1,
     42,

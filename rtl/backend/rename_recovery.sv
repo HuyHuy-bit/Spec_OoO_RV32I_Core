@@ -1,26 +1,30 @@
 `default_nettype none
+// rename owner: rename_state plus rename_checkpoints, with writeback filtering and branch recovery.
 module rename_recovery (
-  input wire clk_i, rst_i, recover_i, resources_ready_i,
-  input wire [1:0] valid_i, checkpoint_i,
-  input wire [9:0] rs1_i, rs2_i, rd_i,
-  input wire [1:0] wb_offer_i, wb_live_i, commit_i,
-  input wire [11:0] wb_destination_i, commit_destination_i, commit_stale_i,
-  input wire [9:0] commit_rd_i,
-  input wire resolve_i, resolve_live_i, mispredict_i,
-  input wire [2:0] resolve_id_i,
+  // inputs
+  input  wire clk_i, rst_i, recover_i, resources_ready_i,
+  input  wire [1:0] valid_i, checkpoint_i,
+  input  wire [9:0] rs1_i, rs2_i, rd_i,
+  input  wire [1:0] wb_offer_i, wb_live_i, commit_i,
+  input  wire [11:0] wb_destination_i, commit_destination_i, commit_stale_i,
+  input  wire [9:0] commit_rd_i,
+  input  wire resolve_i, resolve_live_i, mispredict_i,
+  input  wire [2:0] resolve_id_i,
+
+  // outputs
   output wire [1:0] accept_o,
   output wire [11:0] source1_o, source2_o, destination_o, stale_o,
   output wire [3:0] source_ready_o,
   output wire [63:0] allocation_o,
-  output wire [191:0] rat_o, committed_o,
-  output wire [63:0] free_o, ready_o,
   output logic [1:0] wb_accept_o,
   output wire [1:0] commit_accept_o,
+  output wire resolve_accept_o, branch_recover_o,
   output wire checkpoint_accept_o,
   output wire [2:0] checkpoint_id_o,
   output wire [7:0] checkpoint_valid_o, checkpoint_released_o,
-  output wire resolve_accept_o, branch_recover_o,
-  output wire [63:0] reclaim_o
+  output wire [63:0] reclaim_o,
+  output wire [191:0] rat_o, committed_o,
+  output wire [63:0] free_o, ready_o
 );
   wire checkpoint_ready;
   wire needs_checkpoint = (valid_i[0] && checkpoint_i[0])
@@ -34,7 +38,8 @@ module rename_recovery (
                             && !rst_i && !recover_i;
   assign commit_accept_o = rst_i || recover_i || branch_recover_o ? 2'b00 : commit_i;
 
-  // Surviving results may finish during branch recovery; killed tags cannot write or wake up.
+  // writeback filtering
+  // surviving results may finish during branch recovery; killed tags cannot write or wake up.
   always_comb begin
     wb_accept_o = 0;
     for (int lane = 0; lane < 2; lane++) begin
@@ -49,6 +54,7 @@ module rename_recovery (
     end
   end
 
+  // post-rename checkpoint snapshot
   always_comb begin
     snapshot = rat_o;
     for (int lane = 0; lane < 2; lane++)
@@ -56,6 +62,7 @@ module rename_recovery (
         snapshot[rd_i[lane*5 +: 5]*6 +: 6] = destination_o[lane*6 +: 6];
   end
 
+  // register mappings and free tags
   rename_state state_owner (
     .clk_i, .rst_i, .recover_i, .resources_ready_i(reserve_ready),
     .branch_recover_i(branch_recover_o), .branch_rat_i(restore_rat), .branch_reclaim_i(reclaim_o),
@@ -65,6 +72,8 @@ module rename_recovery (
     .accept_o, .source1_o, .source2_o, .destination_o, .stale_o, .source_ready_o,
     .allocation_o, .rat_o, .committed_o, .free_o, .ready_o
   );
+
+  // branch checkpoints and reclamation
   rename_checkpoints checkpoints (
     .clk_i, .rst_i, .flush_i(recover_i), .create_i(checkpoint_create),
     .snapshot_i(snapshot), .allocation_i(allocation_o),
@@ -74,6 +83,7 @@ module rename_recovery (
     .released_o(checkpoint_released_o), .valid_o(checkpoint_valid_o)
   );
 
+  // checks
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
     if (!rst_i && !recover_i) begin

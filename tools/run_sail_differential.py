@@ -15,7 +15,6 @@ from model.iss.sail_log import parse_sail_log
 from model.iss.spike_log import relocate, spike_sail_trace
 from tools.act4_tools import SAIL
 from tools.check_act4 import check_harness, check_sail
-from tools.run_single_lane import OUT as CORE_OUT, build_core, check_trace, make_header
 from tools.run_lockstep_smoke import verify_spike
 from verif.core.differential_programs import program
 from verif.core.programs import i, csr, constant
@@ -23,8 +22,33 @@ from verif.core.reference import unpack_event
 from verif.lockstep.comparator import compare_traces, ComparisonError
 
 
+HEADER_OUT = ROOT/'out/fields'
+
+
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def make_header():
+    """Bit offsets of the memory request/response and commit-event fields for the C++ benches."""
+    mem = json.loads((ROOT/'config/memory_protocol.yaml').read_text())
+    event = json.loads((ROOT/'config/commit_event.yaml').read_text())
+    lines = ['#pragma once']
+    for prefix, fields in [('REQ', mem['request_fields']), ('RSP', mem['response_fields'])]:
+        offset = 0
+        for f in reversed(fields):
+            lines.append(f'constexpr unsigned {prefix}_{f["name"].upper()} = {offset};')
+            offset += f['width']
+        lines.append(f'constexpr unsigned {"REQUEST" if prefix == "REQ" else "RESPONSE"}_WORDS = {(offset+31)//32};')
+    offset = 4*sum(f['width'] for f in event['csr_fields'])
+    for f in reversed(event['slot_fields']):
+        lines.append(f'constexpr unsigned EV_{f["name"].upper()} = {offset};')
+        offset += f['width']
+    lines += [f'constexpr unsigned EVENT_BITS = {offset};',f'constexpr unsigned COMMIT_WORDS = {(offset*2+31)//32};']
+    HEADER_OUT.mkdir(parents=True, exist_ok=True)
+    path = HEADER_OUT/'fields.hpp'
+    content = '\n'.join(lines)+'\n'
+    if not path.exists() or path.read_text() != content: path.write_text(content)
 
 
 def packets(events):
@@ -68,17 +92,20 @@ def fetched_coverage(events, output):
     return dict(dual_retire_cycles=dual, fences=fences, fence_i=fence_i, mret=mret, identity_recycles=recycles)
 
 
-def build_fetched(directory=ROOT/'out/sail_fetched_differential/obj_dir', replace=None):
-    """Build the MEMORY_SERVICE=1 fetched core with the program-mode driver; mutants run without RTL assertions."""
-    config = json.loads((ROOT/'config/memory_core.json').read_text())
+def build_fetched(directory=ROOT/'out/sail_fetched_differential/obj_dir', replace=None, config_name='memory_core'):
+    """Build the fetched core with the program-mode driver; RTL mutants run without RTL assertions."""
+    config = json.loads((ROOT/f'config/{config_name}.json').read_text())
     make_header()
-    flags = ['--Wall','--assert','--top-module','fetch_execution_core',
-             *(f'-G{k}={v}' for k,v in config['parameters'].items()), ROOT/config['lint_config']]
-    if replace: flags += ['-DSYNTHESIS','-Wno-UNUSEDSIGNAL','-Wno-UNUSEDPARAM']
-    sources = [str(replace[1]) if replace and p == replace[0] else p for p in config['sources']]
+    flags = ['--Wall','--assert','--top-module','cpu_top',
+             *(f'-G{k}={v}' for k,v in config['parameters'].items()), ROOT/config['lint_config'], ROOT/'verif/core/perf_counters.vlt']
+    if replace and replace[0].startswith('rtl/'): flags += ['-DSYNTHESIS','-Wno-UNUSEDSIGNAL','-Wno-UNUSEDPARAM']
+    sources = [str(replace[1]) if replace and p == replace[0] else p
+               for p in config['sources']+['verif/core/fetched_core_tb.cpp']]
+    # The bench's activity counters select the profile's hierarchy from these.
+    defines = ' '.join(f'-DTB_{k}={v}' for k,v in config['parameters'].items())
     result = subprocess.run(['verilator','--cc','--exe','--build','--build-jobs','2',*map(str,flags),
-        '--Mdir',str(directory),'-CFLAGS',f'-std=c++17 -Wall -Wextra -Werror -I{CORE_OUT}',
-        *sources,'verif/core/fetched_core_tb.cpp','-o','fetched_core'],
+        '--Mdir',str(directory),'-CFLAGS',f'-std=c++17 -Wall -Wextra -Werror -I{HEADER_OUT} -I{ROOT/"verif/core"} {defines}',
+        *sources,'-o','fetched_core'],
         cwd=ROOT,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=600)
     if result.returncode: raise RuntimeError(result.stdout[-3000:])
     return directory/'fetched_core', config
@@ -194,11 +221,9 @@ def main():
     parser.add_argument('--sail', type=Path, default=SAIL)
     parser.add_argument('--spike', type=Path, default=ROOT/'../riscv-isa-sim/build/spike')
     parser.add_argument('--reference', choices=('sail','spike'), default='sail')
-    parser.add_argument('--dut', choices=('single_lane','fetched'), default='single_lane')
+    parser.add_argument('--config', default='memory_core', help='fetched-core profile under config/')
     args = parser.parse_args()
-    fetched = args.dut == 'fetched'
     on_spike = args.reference == 'spike'
-    if on_spike and not fetched: parser.error('the Spike differential runs on the fetched core')
     label = 'Spike' if on_spike else 'Sail'
     resource.setrlimit(resource.RLIMIT_CORE,(0,0))
     lock,_ = check_harness()
@@ -207,11 +232,11 @@ def main():
         settings = json.loads((ROOT/'config/spike_differential.json').read_text())
     else:
         reference = sail = args.sail.resolve(); check_sail(sail,lock)
-        settings = json.loads((ROOT/('config/fetched_differential.json' if fetched else 'config/sail_differential.json')).read_text())
+        settings = json.loads((ROOT/'config/fetched_differential.json').read_text())
         if digest(sail) != settings['sail_binary_sha256']: raise ValueError('Sail binary pin differs')
         if settings['sail_override']['platform']['instructions_per_tick'] <= settings.get('long_run',settings)['instruction_limit']+1:
             raise ValueError('Sail timer tick interval must exceed the run limit')
-    config = json.loads((ROOT/('config/memory_core.json' if fetched else 'config/single_lane.json')).read_text())
+    config = json.loads((ROOT/f'config/{args.config}.json').read_text())
     versions = {}
     toolchain = json.loads((ROOT/'config/toolchain.lock').read_text())
     for name,command in [('verilator','verilator'),('riscv-gcc','riscv64-unknown-elf-gcc')]:
@@ -219,21 +244,21 @@ def main():
         if version != next(t['expected_first_line'] for t in toolchain['tools'] if t['name']==name):
             raise ValueError(f'{name} pin differs')
         versions[name] = version
-    paths = config['sources'] + ['config/sail_differential.json','config/single_lane.json','config/platform.yaml',
+    paths = config['sources'] + ['config/platform.yaml',
         'config/commit_event.yaml','config/memory_protocol.yaml','config/toolchain.lock','config/act4.lock',
-        'model/iss/sail_log.py','tools/run_sail_differential.py','tools/run_single_lane.py','tools/check_act4.py',
-        'verif/core/differential_programs.py','verif/core/programs.py','verif/core/reference.py','verif/core/single_lane_tb.cpp',
+        'model/iss/sail_log.py','tools/run_sail_differential.py','tools/check_act4.py',
+        'verif/core/differential_programs.py','verif/core/programs.py','verif/core/reference.py',
         'verif/lockstep/comparator.py','verif/lockstep/generated/commit_event.py','verif/protocol/generated/memory_protocol.py',
         'sw/link/platform.ld','tests/test_sail_log.py']
     if on_spike: paths += ['config/spike_differential.json','model/iss/spike_log.py','tools/run_lockstep_smoke.py','config/references.lock']
-    if fetched:
-        paths += ['config/fetched_differential.json','config/memory_core.json','config/rob_two_wide.json',config['lint_config'],
-                  'verif/core/fetched_core_tb.cpp','verif/unit/packed_bits.hpp']
+    paths += ['config/fetched_differential.json',f'config/{args.config}.json','config/reorder_buffer.json',config['lint_config'],
+              'verif/core/fetched_core_tb.cpp','verif/common/packed_bits.hpp']
     paths += [str(p.relative_to(ROOT)) for p in sorted((ROOT/lock['harness']['directory']).iterdir()) if p.is_file()]
     inputs = {p:digest(ROOT/p) for p in sorted(set(paths))}
     fingerprint = {'inputs':inputs,f'{args.reference}_sha256':digest(reference),'versions':versions}
     run_hash = hashlib.sha256(json.dumps(fingerprint,sort_keys=True).encode()).hexdigest()[:16]
-    out = ROOT/('out/spike_fetched_differential' if on_spike else 'out/sail_fetched_differential' if fetched else 'out/sail_differential')/run_hash
+    suffix = '' if args.config == 'memory_core' else '_'+args.config
+    out = ROOT/(('out/spike_fetched_differential' if on_spike else 'out/sail_fetched_differential')+suffix)/run_hash
     out.mkdir(parents=True,exist_ok=True)
     receipt = out/'receipt.json'; receipt.unlink(missing_ok=True)
     if not on_spike: override = out/'override.json'; override.write_text(json.dumps(settings['sail_override'])+'\n')
@@ -246,14 +271,14 @@ def main():
                 raise RuntimeError(f'expected failure was not reported; see {out/log}')
         elif result.returncode: raise RuntimeError(f'command failed; see {out/log}\n{result.stdout[-1500:]}')
         return result.stdout
-    binary = build_fetched()[0] if fetched else build_core(config)
+    binary = build_fetched(ROOT/f'out/sail_fetched_differential{suffix}/obj_dir', config_name=args.config)[0]
     results = []; references = {}
-    rob = json.loads((ROOT/'config/rob_two_wide.json').read_text())
+    rob = json.loads((ROOT/'config/reorder_buffer.json').read_text())
     generations = rob['entries'] << (rob['identity_bits'] - rob['entries'].bit_length() + 1)
     runs = [(seed, 1, settings.get('instruction_limit')) for seed in settings['seeds']]
-    if fetched: runs.append((settings['long_run']['seed'], settings['long_run']['repeat'], settings['long_run'].get('instruction_limit')))
+    runs.append((settings['long_run']['seed'], settings['long_run']['repeat'], settings['long_run'].get('instruction_limit')))
     for seed,repeat,limit in runs:
-        image,boot,end_pc = program(seed, fetched, 0, repeat)
+        image,boot,end_pc = program(seed, True, 0, repeat)
         words = [int.from_bytes(image[n:n+4],'little') for n in range(0,len(image),4)]
         if any(w & 127 == 0x73 and (w >> 12) & 3 and w >> 20 in COUNTERS for w in words):
             raise ValueError('differential program reads a timing counter')
@@ -287,51 +312,49 @@ def main():
         for mode in modes:
             log = f'core_{seed}_{mode}.log'
             output = run([binary,raw,seed,len(expected),mode,'+verilator+rand+reset+2',f'+verilator+seed+{seed}'],log)
-            if not fetched: check_trace(output,image,mode)
             count = compare_output(output,expected,boot)
-            witnesses = fetched_coverage(expected,output) if fetched else {}
+            witnesses = fetched_coverage(expected,output)
             if repeat > 1 and not witnesses['identity_recycles']: raise ValueError('long run did not recycle ROB identities')
             results.append(dict(seed=seed,mode=mode,compared_events=count,coverage={**covered,**witnesses},elf_sha256=digest(elf),
                                 **{f'{args.reference}_trace_sha256':digest(trace)},rtl_log_sha256=digest(out/log),
                                 bootstrap_events_per_reset=len(boot)))
-            print(f'{label} differential {args.dut} seed={seed} {mode}: PASS ({count} events)',flush=True)
+            print(f'{label} differential fetched seed={seed} {mode}: PASS ({count} events)',flush=True)
     raw,image,boot,expected = references[42]
-    mutations = []
-    if fetched:
-        output = (out/'core_42_normal.log').read_text()
-        actual = [unpack_event(line.split()[3:]) for line in output.splitlines() if line.startswith('EVENT ')]
-        mutations = comparator_mutations(expected, actual)
-        print(f'{label} comparator mutations: PASS ({len(mutations)} detected)',flush=True)
-        negatives = []
-        for mode,marker in (('fatal','platform fatal'),('hold_drain','final memory transaction did not drain')):
-            run([binary,raw,42,len(expected),mode],f'negative_{mode}.log',failure=marker)
-            negatives.append(mode)
-        try: compare_output(run([binary,raw,42,len(expected)-1,'normal'],'negative_short.log'),expected,boot)
-        except ValueError: negatives.append('short_trace')
-        else: raise RuntimeError('short fetched trace was accepted')
-        print(f'{label} fetched negatives: PASS ({", ".join(negatives)})',flush=True)
-        mutations += negatives
+    output = (out/'core_42_normal.log').read_text()
+    actual = [unpack_event(line.split()[3:]) for line in output.splitlines() if line.startswith('EVENT ')]
+    mutations = comparator_mutations(expected, actual)
+    print(f'{label} comparator mutations: PASS ({len(mutations)} detected)',flush=True)
+    negatives = []
+    for mode,marker in (('fatal','platform fatal'),('hold_drain','final memory transaction did not drain')):
+        run([binary,raw,42,len(expected),mode],f'negative_{mode}.log',failure=marker)
+        negatives.append(mode)
+    try: compare_output(run([binary,raw,42,len(expected)-1,'normal'],'negative_short.log'),expected,boot)
+    except ValueError: negatives.append('short_trace')
+    else: raise RuntimeError('short fetched trace was accepted')
+    print(f'{label} fetched negatives: PASS ({", ".join(negatives)})',flush=True)
+    mutations += negatives
     for name,file,old,new in ([
-        ('fence_i_no_redirect','rtl/core/head_system_controller.sv','decoded.op inside {OP_MRET, OP_FENCE_I};','decoded.op == OP_MRET;'),
-        ('fence_i_keeps_line','rtl/frontend/fetch_two_wide.sv','        end else state_q <= EMPTY;',
+        ('fence_i_no_redirect','rtl/system/head_system_controller.sv','decoded.op inside {OP_MRET, OP_FENCE_I};','decoded.op == OP_MRET;'),
+        ('fence_i_keeps_line','rtl/frontend/fetch_unit.sv','        end else state_q <= EMPTY;',
          '        end else if (redirect_pc_i[31:5] != pc_q[31:5]) state_q <= EMPTY;'),
-    ] if fetched else [
-        ('load_sign','rtl/core/single_lane_core.sv',"{{24{selected_word[7]}}, selected_word[7:0]}","{24'd0, selected_word[7:0]}"),
-        ('trap_value','rtl/execute/execute_single.sv','trap_value_o = address_o;','trap_value_o = address_o + 4;'),
-    ]):
+    ] + ([
+        # Early loads: skipping the older-store overlap check reads stale bytes; killing every in-flight load
+        # on recovery strands a surviving load whose queue entry is already issued.
+        ('early_ignores_overlap','rtl/memory/load_store_unit.sv','start_ready && forward_mask == 0;','start_ready;'),
+        ('early_kills_survivor','rtl/memory/load_store_unit.sv',"(recover_i && 5'(slot - head) > 5'(recover_slot_i - head))",'recover_i'),
+    ] if 'rtl/memory/load_store_unit.sv' in config['sources'] else [])):
         text = (ROOT/file).read_text()
         if text.count(old) != 1: raise ValueError('RTL mutation no longer matches')
         directory = out/name; directory.mkdir(exist_ok=True)
         changed = directory/Path(file).name; changed.write_text(text.replace(old,new))
-        if fetched: mutant = build_fetched(directory/'obj_dir',(file,changed))[0]
-        else:
-            sources = [changed if p == file else p for p in config['sources']]
-            run(['verilator','--cc','--exe','--build','--build-jobs','2','--Wall','-Wno-UNUSEDPARAM','-Wno-UNUSEDSIGNAL',
-                 '--assert','--top-module',config['top'],'--Mdir',directory/'obj_dir','-CFLAGS',f'-std=c++17 -I{CORE_OUT}',
-                 *sources,ROOT/'verif/core/single_lane_tb.cpp','-o','core_check'],name+'_build.log')
-            mutant = directory/'obj_dir/core_check'
-        output = run([mutant,raw,42,len(expected),'normal'],name+'.log')
-        try: compare_output(output,expected,boot)
+        mutant = build_fetched(directory/'obj_dir',(file,changed),config_name=args.config)[0]
+        # A mutant may also fail by hanging (watchdog) instead of diverging; both count as detected.
+        result = subprocess.run([str(c) for c in [mutant,raw,42,len(expected),'normal']],cwd=ROOT,text=True,
+                                stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=600)
+        (out/(name+'.log')).write_text(result.stdout)
+        try:
+            if result.returncode: raise ComparisonError(f'{name} mutant failed')
+            compare_output(result.stdout,expected,boot)
         except ComparisonError: mutations.append(name)
         else: raise RuntimeError(f'{label} comparison missed {name} RTL mutation')
         print(f'{label} RTL mutation {name}: PASS (detected)',flush=True)
@@ -339,7 +362,7 @@ def main():
     receipt.write_text(json.dumps({**fingerprint,'schema':1,'profile':settings['profile'],'runs':results,
         'core_binary_sha256':digest(binary),**({} if on_spike else {'sail_override':settings['sail_override']}),
         'mutations_detected':mutations,'limitations':settings['limitations'],
-        ('two_wide_core_accepted' if fetched else 'architectural_slice_accepted'):False},indent=2)+'\n')
+        'two_wide_core_accepted':False},indent=2)+'\n')
     print(f'Receipt: {receipt.relative_to(ROOT)}')
 
 

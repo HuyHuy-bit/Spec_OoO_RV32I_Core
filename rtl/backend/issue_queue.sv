@@ -1,18 +1,22 @@
 `default_nettype none
+// 16-entry unified issue queue: wakeup on accepted writebacks, oldest-first select for two ports.
 module issue_queue (
-  input wire clk_i, rst_i, flush_i,
-  input wire recover_i,
-  input wire [4:0] head_slot_i, recover_slot_i,
-  input wire [1:0] dispatch_i,
+  // inputs
+  input  wire clk_i, rst_i, flush_i,
+  input  wire recover_i,
+  input  wire [4:0] head_slot_i, recover_slot_i,
+  input  wire [1:0] dispatch_i,
+  input  wire [25:0] dispatch_id_i,
+  input  wire [23:0] dispatch_source_i,
+  input  wire [3:0] dispatch_ready_i, dispatch_eligible_i,
+  input  wire [11:0] dispatch_destination_i,
+  input  wire [127:0] dispatch_payload_i,
+  input  wire [1:0] wb_accept_i,
+  input  wire [11:0] wb_destination_i,
+  input  wire [1:0] port_ready_i,
+
+  // outputs
   output logic [1:0] dispatch_ready_o,
-  input wire [25:0] dispatch_id_i,
-  input wire [23:0] dispatch_source_i,
-  input wire [3:0] dispatch_ready_i, dispatch_eligible_i,
-  input wire [11:0] dispatch_destination_i,
-  input wire [127:0] dispatch_payload_i,
-  input wire [1:0] wb_accept_i,
-  input wire [11:0] wb_destination_i,
-  input wire [1:0] port_ready_i,
   output logic [1:0] issue_o,
   output logic [25:0] issue_id_o,
   output logic [23:0] read_address_o,
@@ -33,6 +37,7 @@ module issue_queue (
   logic found_free;
   wire stop = rst_i || flush_i || recover_i;
 
+  // dispatch capacity and free slots
   always_comb begin
     occupancy_o = 0;
     free_slot[0] = 0;
@@ -50,7 +55,8 @@ module issue_queue (
     dispatch_ready_o[1] = !stop && occupancy_o < 15;
   end
 
-  // Only the backend's accepted writes may wake a resident instruction.
+  // operand wakeup
+  // only the backend's accepted writes may wake a resident instruction.
   always_comb begin
     for (int slot = 0; slot < 16; slot++) begin
       awake[slot] = ready_q[slot];
@@ -64,7 +70,8 @@ module issue_queue (
     end
   end
 
-  // Port zero selects first; ROB-relative age is independent of IQ storage order.
+  // oldest-ready issue selection
+  // port zero selects first; rob-relative age is independent of iq storage order.
   always_comb begin
     issue_o = 0;
     issue_id_o = 0;
@@ -90,6 +97,7 @@ module issue_queue (
     end
   end
 
+  // queue allocation, issue and recovery
   always_ff @(posedge clk_i) begin
     if (rst_i || flush_i) valid_q <= 0;
     else begin
@@ -113,6 +121,7 @@ module issue_queue (
     end
   end
 
+  // checks
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
     if (!stop) begin

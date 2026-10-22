@@ -1,10 +1,14 @@
 `default_nettype none
+// combinational two-wide rename planner: maps sources, picks free tags and resolves same-bundle raw/waw.
 module rename_bundle (
-  input wire rst_i, recover_i, resources_ready_i,
-  input wire [1:0] valid_i, checkpoint_i,
-  input wire [9:0] rs1_i, rs2_i, rd_i,
-  input wire [191:0] rat_i,
-  input wire [63:0] free_i, ready_i,
+  // inputs
+  input  wire rst_i, recover_i, resources_ready_i,
+  input  wire [1:0] valid_i, checkpoint_i,
+  input  wire [9:0] rs1_i, rs2_i, rd_i,
+  input  wire [191:0] rat_i,
+  input  wire [63:0] free_i, ready_i,
+
+  // outputs
   output logic [1:0] accept_o,
   output logic [11:0] source1_o, source2_o, destination_o, stale_o,
   output logic [3:0] source_ready_o,
@@ -16,6 +20,7 @@ module rename_bundle (
   logic [1:0] operand_ready [0:1];
   logic enough;
 
+  // bundle admission and physical tag allocation
   always_comb begin
     selected = valid_i;
     if (checkpoint_i[0]) selected[1] = 0;
@@ -35,7 +40,7 @@ module rename_bundle (
       end
     end
 
-    // Lane one sees lane zero's new mapping, including its stale tag on WAW.
+    // lane one sees lane zero's new mapping, including its stale tag on waw.
     if (selected[0] && rd_i[0 +: 5] != 0) begin
       if (rs1_i[5 +: 5] == rd_i[0 +: 5]) begin
         source1[1] = destination[0];
@@ -70,7 +75,7 @@ module rename_bundle (
     end
   end
 
-  // Only lane zero can cut a two-instruction bundle; lane one already ends it.
+  // only lane zero can cut a two-instruction bundle; lane one already ends it.
   wire unused_checkpoint_lane1 = checkpoint_i[1];
 endmodule
 `default_nettype wire

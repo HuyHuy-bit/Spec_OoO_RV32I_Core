@@ -134,7 +134,7 @@ class Reference:
             if f3:
                 address = ins >> 20
                 if address in (0xb00, 0xb80):
-                    raise ValueError('Cycle-counter timing is checked by csr_single_tb, not this interpreter')
+                    raise ValueError('Cycle-counter timing is not modeled by this interpreter')
                 write = f3 & 3 == 1 or r1 != 0
                 definition = CSRS.get(address)
                 if definition is None or (write and definition['access'] == 'ro'): trap = (2, ins)

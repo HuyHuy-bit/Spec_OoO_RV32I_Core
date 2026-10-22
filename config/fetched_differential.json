@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "profile": "fetched_memory_core_sail_differential",
-  "dut": "fetch_execution_core with config/memory_core.json parameters (FRONTEND_FAULTS=1, TRAP_SERVICE=1, MEMORY_SERVICE=1)",
+  "dut": "cpu_top with config/memory_core.json parameters (FRONTEND_FAULTS=1, TRAP_SERVICE=1, MEMORY_SERVICE=1)",
   "seeds": [
     1,
     42,

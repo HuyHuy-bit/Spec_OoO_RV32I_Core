@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "profile": "fetched_memory_core_selected_act4",
-  "dut": "fetch_execution_core with config/memory_core.json parameters, driven by verif/core/fetched_core_tb.cpp in ACT4 mode",
+  "dut": "cpu_top with config/memory_core.json parameters, driven by verif/core/fetched_core_tb.cpp in ACT4 mode",
   "seeds": [
     1,
     42,

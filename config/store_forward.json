@@ -1,0 +1,152 @@
+{
+  "schema": 1,
+  "profile": "store_forward_combinational",
+  "top": "store_forward_properties",
+  "dut": "store_forward",
+  "candidates": 9,
+  "sources": [
+    "rtl/memory/store_forward.sv",
+    "verif/formal/memory/store_forward_properties.sv"
+  ],
+  "mode": "bmc",
+  "engine": "smtbmc bitwuzla",
+  "cover_engine": "smtbmc yices",
+  "depth": 1,
+  "timeout_seconds": 120,
+  "assumptions": [
+    "No formal input assumptions. All load/candidate metadata and data are unconstrained two-state inputs."
+  ],
+  "environment": [
+    "Stateless selector: no clock, reset, target traffic or fairness assumptions.",
+    "Independent pairwise-dominance winner reference, arbitrary watched store/byte indices for data, and bit-by-bit extension checks. The selector has no state, so one-step BMC over unconstrained inputs is exhaustive. Four BMC jobs cover stall, masks, forwarded data and result formatting; all four must pass. Result formatting uses DUT forwarded bytes only alongside the independent data proof; no properties are assumed."
+  ],
+  "required_covers": [
+    "inactive",
+    "invalid_load",
+    "memory_only",
+    "full_forward",
+    "mixed_memory",
+    "split_stores",
+    "last_candidate",
+    "unknown_address",
+    "unavailable_byte",
+    "signed_byte",
+    "unsigned_half"
+  ],
+  "mutations": [
+    {
+      "name": "age_priority",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "store_age_i[s] >= youngest",
+      "new": "store_age_i[s] <= youngest",
+      "assertions": [
+        "data_exact",
+        "result_exact",
+        "stall_exact"
+      ]
+    },
+    {
+      "name": "younger_store",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "store_age_i[s] < load_age_i",
+      "new": "1'b1",
+      "assertions": [
+        "data_exact",
+        "result_exact",
+        "mask_exact",
+        "stall_exact"
+      ]
+    },
+    {
+      "name": "killed_store",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "store_valid_i[s] && !store_killed_i[s]",
+      "new": "store_valid_i[s]",
+      "assertions": [
+        "data_exact",
+        "result_exact",
+        "mask_exact",
+        "stall_exact"
+      ]
+    },
+    {
+      "name": "byte_mask",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "store_mask_i[s][b]",
+      "new": "store_mask_i[s][3-b]",
+      "assertions": [
+        "data_exact",
+        "result_exact",
+        "mask_exact",
+        "stall_exact"
+      ]
+    },
+    {
+      "name": "data_lane",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "store_data_i[s][b*8 +: 8]",
+      "new": "store_data_i[s][((b+1)%4)*8 +: 8]",
+      "assertions": [
+        "data_exact",
+        "result_exact"
+      ]
+    },
+    {
+      "name": "data_readiness",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "if (found && !ready_byte) stall_o = 1;",
+      "new": "if (1'b0) stall_o = 1;",
+      "assertions": [
+        "stall_exact"
+      ]
+    },
+    {
+      "name": "unknown_address",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "if (older[s] && !store_address_ready_i[s]) stall_o = 1;",
+      "new": "if (1'b0) stall_o = 1;",
+      "assertions": [
+        "stall_exact"
+      ]
+    },
+    {
+      "name": "word_match",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "store_address_i[s][31:2] == load_address_i[31:2]",
+      "new": "1'b1",
+      "assertions": [
+        "mask_exact",
+        "data_exact",
+        "result_exact",
+        "stall_exact"
+      ]
+    },
+    {
+      "name": "byte_sign",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "!load_unsigned_i && shifted[7]",
+      "new": "1'b0",
+      "assertions": [
+        "result_exact"
+      ]
+    },
+    {
+      "name": "half_sign",
+      "source": "rtl/memory/store_forward.sv",
+      "old": "!load_unsigned_i && shifted[15]",
+      "new": "1'b0",
+      "assertions": [
+        "result_exact"
+      ]
+    }
+  ],
+  "extra_inputs": [
+    "config/toolchain.lock",
+    "Makefile"
+  ],
+  "interface": "Default nine candidates accommodate eight SQ entries and one committed-store owner, in arbitrary input order. Age is an unsigned six-bit rank: larger is younger. The future caller maps committed ownership to rank zero and live ROB entries to distance from the ROB head plus one (1..32), with the load ranked the same way. Valid candidates must be live; killed candidates are excluded. Equal ranks use the higher candidate index deterministically; unique live ranks remain a queue integration obligation. The proof covers all input ranks, not their derivation.",
+  "selection": "Only valid, non-killed stores with rank below the load rank participate. Any such store with an unknown address stalls conservatively, regardless of mask. Known addresses match by aligned word; masks, data and byte readiness are word-relative. For each requested byte choose the greatest rank, then highest index. If that selected byte is not ready, stall instead of choosing older data or memory. A known zero-mask store contributes nothing.",
+  "result": "Forward data is word-relative and zero outside the forward mask. Memory mask contains requested bytes not forwarded. Result merges the supplied aligned memory word with forwarded bytes, then shifts and sign/zero extends. All outputs except stall are zero when inactive or stalled. Active illegal size or misalignment stalls; upstream preparation owns precise exceptions. A clear stall does not mean a memory response has arrived: result is usable only once every memory-mask byte is available. Fully forwarded results do not depend on memory data. No request or completion handshake is provided.",
+  "integration": "Caller must qualify cacheable/idempotent loads, enforce MMIO/fence ordering, include every relevant SQ/committed owner and retain the forwarding snapshot while needed. Rank generation, wrap, squash propagation and atomic ownership handoff are separate obligations. No existing core path is changed by this standalone module.",
+  "claim": "Exhaustive two-state combinational forwarding and stall proof at nine candidates, with independent covers and mutation detection. No temporal LSQ, rank/wrap derivation, cache/memory-response ownership, production integration or physical timing acceptance."
+}

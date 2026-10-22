@@ -1,11 +1,15 @@
 `default_nettype none
+// eight branch checkpoints: rat snapshots plus younger-allocation history for misprediction recovery.
 module rename_checkpoints (
-  input wire clk_i, rst_i, flush_i,
-  input wire create_i,
-  input wire [191:0] snapshot_i,
-  input wire [63:0] allocation_i,
-  input wire resolve_i, mispredict_i,
-  input wire [2:0] resolve_id_i,
+  // inputs
+  input  wire clk_i, rst_i, flush_i,
+  input  wire create_i,
+  input  wire [191:0] snapshot_i,
+  input  wire [63:0] allocation_i,
+  input  wire resolve_i, mispredict_i,
+  input  wire [2:0] resolve_id_i,
+
+  // outputs
   output wire create_ready_o, create_accept_o,
   output wire [2:0] create_id_o,
   output logic restore_valid_o,
@@ -21,6 +25,7 @@ module rename_checkpoints (
   logic [2:0] candidate;
   wire recovering = resolve_i && mispredict_i;
 
+  // free checkpoint selection
   always_comb begin
     candidate = 0;
     for (int slot = 7; slot >= 0; slot--)
@@ -31,6 +36,7 @@ module rename_checkpoints (
   assign create_accept_o = create_i && create_ready_o;
   assign create_id_o = create_accept_o ? candidate : 3'd0;
 
+  // resolution and recovery outputs
   always_comb begin
     restore_valid_o = 0;
     restore_rat_o = 0;
@@ -47,6 +53,7 @@ module rename_checkpoints (
     end
   end
 
+  // checkpoint snapshots and allocation history
   always_comb begin
     valid_d = valid_q & ~released_o;
     for (int slot = 0; slot < 8; slot++) begin
@@ -58,7 +65,7 @@ module rename_checkpoints (
       else if (valid_q[slot])
         history_d[slot] = history_q[slot] | allocation_i;
     end
-    // The new snapshot includes the CFI; its younger-allocation history starts empty.
+    // the new snapshot includes the cfi; its younger-allocation history starts empty.
     if (create_accept_o) begin
       valid_d[candidate] = 1;
       snapshot_d[candidate] = snapshot_i;
@@ -75,6 +82,7 @@ module rename_checkpoints (
     end
   end
 
+  // checkpoint state update
   always_ff @(posedge clk_i) begin
     valid_q <= valid_d;
     for (int slot = 0; slot < 8; slot++) begin
@@ -84,6 +92,7 @@ module rename_checkpoints (
     end
   end
 
+  // checks
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
     if (!rst_i && !flush_i) begin

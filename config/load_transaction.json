@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "profile": "single_outstanding_load_transaction",
-  "sources": ["rtl/generated/memory_protocol_pkg.sv", "rtl/execute/load_transaction.sv"],
-  "lint_config": "config/fetch_two_wide.vlt",
+  "sources": ["rtl/generated/memory_protocol_pkg.sv", "rtl/memory/load_transaction.sv"],
+  "lint_config": "config/fetch_unit.vlt",
   "seeds": [1, 42, 20260927],
   "random_cases_per_seed": 2000,
   "scope": "Standalone prepared-load consumer. No production IQ/ROB/data-port integration, store write path, cache, LSQ, forwarding, architectural retirement or full-core acceptance. Uses the existing memory protocol and shared verification runner. No physical timing claim.",

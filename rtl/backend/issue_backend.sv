@@ -1,39 +1,33 @@
 `default_nettype none
+// rename_rob plus the 16-entry issue queue: renamed instructions wait here for operands and a port.
 module issue_backend (
-  input wire clk_i, rst_i, flush_i, drained_i, resources_ready_i,
-  input wire [1:0] valid_i, cfi_i, solo_i, queue_skip_i,
-  input wire head_read_i,
-  input wire [11:0] head_source_i,
-  input wire serial_offer_i,
-  input wire [12:0] serial_id_i,
-  input commit_event_pkg::commit_event_t serial_event_i,
-  output wire serial_accept_o,
-  input wire [9:0] rs1_i, rs2_i, rd_i,
-  input wire [63:0] pc_i,
-  input wire [3:0] eligible_i,
-  input wire [127:0] payload_i,
+  // inputs
+  input  wire clk_i, rst_i, flush_i, drained_i,
+  input  wire resources_ready_i,
+  input  wire [1:0] valid_i, cfi_i, solo_i, queue_skip_i,
+  input  wire [9:0] rs1_i, rs2_i, rd_i,
+  input  wire [63:0] pc_i,
+  input  wire [3:0] eligible_i,
+  input  wire [127:0] payload_i,
+  input  wire head_read_i,
+  input  wire [11:0] head_source_i,
+  input  wire [1:0] port_ready_i,
+  input  wire [1:0] complete_offer_i, complete_solo_i,
+  input  wire [25:0] complete_id_i,
+  input  commit_event_pkg::commit_event_t [1:0] complete_event_i,
+  input  wire resolve_offer_i, resolve_grant_i, mispredict_i,
+  input  wire [12:0] resolve_id_i,
+  input  wire [1:0] retire_ready_i,
+  input  wire serial_offer_i,
+  input  wire [12:0] serial_id_i,
+  input  commit_event_pkg::commit_event_t serial_event_i,
+  input  wire trap_ready_i,
+
+  // outputs
   output wire [1:0] allocate_accept_o,
   output wire [25:0] allocate_id_o,
   output wire [11:0] source1_o, source2_o, destination_o, stale_o,
   output wire [3:0] source_ready_o,
-  input wire [1:0] complete_offer_i, complete_solo_i,
-  input wire [25:0] complete_id_i,
-  input commit_event_pkg::commit_event_t [1:0] complete_event_i,
-  output wire [1:0] complete_accept_o, wb_accept_o,
-  output wire [11:0] wb_destination_o,
-  output wire [63:0] wb_data_o,
-  input wire resolve_offer_i, resolve_grant_i, mispredict_i,
-  input wire [12:0] resolve_id_i,
-  output wire resolve_accept_o, branch_recover_o,
-  input wire [1:0] retire_ready_i,
-  output wire [1:0] retire_valid_o, retire_accept_o,
-  output wire [9:0] retire_rd_o,
-  output wire [11:0] retire_destination_o, retire_stale_o,
-  output commit_event_pkg::commit_event_t [1:0] retire_event_o,
-  input wire trap_ready_i,
-  output wire trap_valid_o, trap_accept_o,
-  output commit_event_pkg::commit_event_t trap_event_o,
-  input wire [1:0] port_ready_i,
   output wire [1:0] issue_o,
   output wire [25:0] issue_id_o,
   output wire [11:0] issue_destination_o,
@@ -41,6 +35,17 @@ module issue_backend (
   output wire [127:0] issue_payload_o,
   output wire [127:0] read_data_o,
   output wire [3:0] read_ready_o,
+  output wire [1:0] complete_accept_o, wb_accept_o,
+  output wire [11:0] wb_destination_o,
+  output wire [63:0] wb_data_o,
+  output wire resolve_accept_o, branch_recover_o,
+  output wire [1:0] retire_valid_o, retire_accept_o,
+  output wire [9:0] retire_rd_o,
+  output wire [11:0] retire_destination_o, retire_stale_o,
+  output commit_event_pkg::commit_event_t [1:0] retire_event_o,
+  output wire serial_accept_o,
+  output wire trap_valid_o, trap_accept_o,
+  output commit_event_pkg::commit_event_t trap_event_o,
   output wire head_valid_o,
   output wire [12:0] head_id_o,
   output wire [31:0] head_pc_o,
@@ -58,10 +63,11 @@ module issue_backend (
   wire [23:0] read_address = head_read_i ? {12'd0, head_source_i} : issue_source_o;
   wire recover = flush_i || trap_accept_o;
 
-  // The queue must hold the whole renamed prefix, so its credits join the allocation stall.
+  // the queue must hold the whole renamed prefix, so its credits join the allocation stall.
   wire [1:0] selected = {valid_i[1] && !cfi_i[0], valid_i[0]};
 
-  backend_two_wide backend (
+  // rename, register storage and retirement
+  rename_rob backend (
     .clk_i, .rst_i, .flush_i, .drained_i,
     .resources_ready_i(resources_ready_i && (selected & ~queue_skip_i & ~dispatch_ready) == 0),
     .valid_i, .cfi_i, .solo_i, .rs1_i, .rs2_i, .rd_i, .pc_i,
@@ -81,7 +87,7 @@ module issue_backend (
     .checkpoint_accept_o, .checkpoint_id_o, .checkpoint_valid_o, .checkpoint_released_o
   );
 
-  // Accepted allocation dispatches renamed tags and readiness; selection drives the read ports.
+  // operand wakeup and issue scheduling
   issue_queue queue (
     .clk_i, .rst_i, .flush_i(recover), .recover_i(branch_recover_o),
     .head_slot_i(head_id_o[4:0]), .recover_slot_i(resolve_id_i[4:0]),
@@ -94,6 +100,7 @@ module issue_backend (
     .issue_destination_o, .issue_payload_o, .occupancy_o(issue_occupancy_o)
   );
 
+  // checks
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
     if (!rst_i) begin

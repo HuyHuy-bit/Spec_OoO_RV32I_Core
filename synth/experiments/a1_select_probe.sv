@@ -14,7 +14,7 @@ module a1_select_probe (
   output wire [31:0]  grant_o,
   output logic [23:0] read_addr_o
 );
-  // Candidates only: ownership, commit/free forwarding, and recovery live outside this probe.
+  // candidates only: ownership, commit/free forwarding, and recovery live outside this probe.
   wire [63:0] available = free_i & 64'hfffffffffffffffe & {64{!stop_i}};
   wire [63:0] alloc0 = available & (~available + 64'd1);
   wire [63:0] remaining = available & ~alloc0;
@@ -28,7 +28,7 @@ module a1_select_probe (
     end
   end
 
-  // Input slots are already age ordered: slot zero is oldest. No age-sort cost is modeled.
+  // input slots are already age ordered: slot zero is oldest. no age-sort cost is modeled.
   wire [15:0] runnable;
   for (genvar entry = 0; entry < 16; entry++) begin : g_ready
     wire [1:0] operand_ready;

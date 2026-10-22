@@ -44,7 +44,7 @@ module load_transaction_handshake (
     end
   end
 
-  // The target records external acceptance, never the DUT's response readiness.
+  // the target records external acceptance, never the dut's response readiness.
   always @(posedge clk) begin
     past_valid <= 1;
     if (!past_valid) assume (rst);

@@ -2,7 +2,7 @@
   "schema": 1,
   "profile": "load_transaction_handshake_smoke",
   "top": "load_transaction_handshake",
-  "sources": ["rtl/generated/memory_protocol_pkg.sv", "rtl/execute/load_transaction.sv", "verif/formal/memory/load_transaction_handshake.sv"],
+  "sources": ["rtl/generated/memory_protocol_pkg.sv", "rtl/memory/load_transaction.sv", "verif/formal/memory/load_transaction_handshake.sv"],
   "mode": "bmc",
   "engine": "smtbmc yices",
   "cover_engine": "smtbmc yices",

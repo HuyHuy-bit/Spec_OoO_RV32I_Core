@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "profile": "sequential_fetch_integer_control_flow_core",
+  "sources": [
+    "rtl/generated/platform_pkg.sv",
+    "rtl/generated/memory_protocol_pkg.sv",
+    "rtl/core/core_pkg.sv",
+    "rtl/frontend/decoder.sv",
+    "rtl/execute/execute_unit.sv",
+    "rtl/generated/commit_event_pkg.sv",
+    "rtl/backend/rename_bundle.sv",
+    "rtl/backend/rename_state.sv",
+    "rtl/backend/rename_checkpoints.sv",
+    "rtl/backend/rename_recovery.sv",
+    "rtl/backend/reorder_buffer.sv",
+    "rtl/backend/prf_4r2w.sv",
+    "rtl/backend/rename_rob.sv",
+    "rtl/backend/issue_queue.sv",
+    "rtl/backend/issue_backend.sv",
+    "rtl/execute/alu_pipeline.sv",
+    "rtl/execute/control_flow_pipeline.sv",
+    "rtl/system/head_dispatch.sv",
+    "rtl/system/head_system_controller.sv",
+    "rtl/backend/execution_backend.sv",
+    "rtl/frontend/branch_predictor.sv",
+    "rtl/frontend/fetch_unit.sv",
+    "rtl/frontend/frontend_fault_decode.sv",
+    "rtl/system/csr_unit.sv",
+    "rtl/core/cpu_top.sv"
+  ],
+  "lint_config": "config/cpu_top.vlt",
+  "seeds": [
+    1,
+    42,
+    20260920
+  ],
+  "scope": "Instruction-memory-connected integer/branch/jump execution subset. Predecoded gshare/RAS/JALR-target prediction with checkpoint repair (rtl/frontend/branch_predictor.sv), held line traffic and branch recovery, full-window external restart. No CSR/trap service, load/store execution, cache, architectural-suite acceptance of this top or clock claim. This acceptance profile pins FRONTEND_FAULTS=0; the enabled fault-insertion profile is checked separately. This historical profile pins TRAP_SERVICE=0; architectural trap acceptance is checked separately.",
+  "faults": "Frontend fault tokens and unsupported instructions stall fetch-to-dispatch. Backend target-alignment faults remain held raw ROB-head candidates. None is converted into a finalized trap event; they require future precise fault insertion/head control. Younger fetch faults may be discarded by older branch recovery. unsupported_o marks raw unsupported valid lanes, including a tail ignored behind lane-zero CFI.",
+  "recovery": "Only branch resolution competes internally. resolve_grant_i gives the caller permission to defer it; accepted branch recovery always has frontend redirect capacity. External flush_i wins and supplies flush_pc_i, restores committed rename state and preserves retirement order. The caller chooses a restart PC consistent with committed state. No multi-event arbiter is claimed.",
+  "flow": "Frontend take is exactly backend allocation acceptance. Fetch predicts JAL taken and conditional branches by a 256-entry PC-indexed 2-bit counter, both to their exact encoded target; JALR and non-CFIs predict PC+4. A predicted-taken lane ends the offered group. Retired conditional branches train the counters (taken = next PC differs from PC+4); recovery and flush leave counters unchanged. enable_i only controls new fetch demand. Fetch faults never enter the supported-instruction decoder. Sticky instruction-protocol fatal disables dispatch, issue, completion grants, resolution and retirement until reset; it is not a precise trap.",
+  "drain": "The core recycles ROB identities itself. On identity_drain_o it stops new fetch demand, waits until the window is empty, no instruction transaction is offered or outstanding, no producer, system or memory work is held and flush_ready_o is high, restart-flushes to the committed next PC (last retired or trap pc_after, else the last external flush PC or reset PC), then pulses the internal drain. identity_drain_o falls when the recycle completes. External drained_i remains legal under the same conditions with enable_i low; generations never silently wrap.",
+  "parameters": {
+    "FRONTEND_FAULTS": 0,
+    "TRAP_SERVICE": 0
+  }
+}

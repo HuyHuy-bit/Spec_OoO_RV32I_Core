@@ -36,7 +36,7 @@ def build(rtl: str, directory: Path, log: str) -> str:
         "verilator", "--cc", "--exe", "--build", "--build-jobs", "2", "--Wall", "--assert",
         "--x-initial", "unique", "--top-module", "prf_4r2w", "--Mdir", str(directory),
         "-CFLAGS", "-std=c++17 -Wall -Wextra -Werror", rtl,
-        str(ROOT / "verif/unit/prf_4r2w_tb.cpp"), "-o", "prf_check",
+        str(ROOT / "verif/backend/prf_4r2w_tb.cpp"), "-o", "prf_check",
     ], log)
     return str(directory / "prf_check")
 
@@ -73,7 +73,7 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     receipt_path = OUT / ("mutation_receipt.json" if args.mutations else "receipt.json")
     receipt_path.unlink(missing_ok=True)
-    inputs = ["rtl/backend/prf_4r2w.sv", "verif/unit/prf_4r2w_tb.cpp",
+    inputs = ["rtl/backend/prf_4r2w.sv", "verif/backend/prf_4r2w_tb.cpp",
               "tools/run_prf_check.py", "config/toolchain.lock", "config/prf_contract.json"]
     digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
     receipt = {"schema": 1, "inputs_sha256": {p: digest(ROOT / p) for p in inputs}, "simulation": []}

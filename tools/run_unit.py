@@ -65,7 +65,10 @@ class UnitRun:
         self.retained.unlink(missing_ok=True)
         (self.out/'receipt.json').unlink(missing_ok=True)
         self.sources = [root/p for p in self.config.get('sources', self.profile['sources'])]
-        self.bench = root/f'verif/unit/{name}_tb.cpp'
+        benches = list(root.glob(f'verif/*/{name}_tb.cpp'))  # benches live in their subsystem folder
+        if len(benches) != 1:
+            raise RuntimeError(f'expected one bench for {name}, found {len(benches)}')
+        self.bench = benches[0]
         paths = [*self.sources, self.bench, *local_headers(root, self.bench),
                  *(root/p for p in self.profile['inputs']), root/f'config/{name}.json',
                  root/'tools/run_unit.py', root/'tools/unit_profiles.py', root/'Makefile',
@@ -172,8 +175,10 @@ class UnitRun:
                 tar.addfile(info, io.BytesIO(data))
         result.update(archive=str(archive.relative_to(self.root)), archive_sha256=digest(archive))
         text = json.dumps(result, indent=2)+'\n'
-        (self.out/'receipt.json').write_text(text)
-        self.retained.write_text(text)
+        for path in (self.out/'receipt.json', self.retained):
+            # write-then-rename: an interrupted run must not leave a truncated receipt behind.
+            path.with_suffix('.tmp').write_text(text)
+            path.with_suffix('.tmp').replace(path)
 
     def execute(self, suite):
         profile, config = self.profile, self.config

@@ -3,12 +3,12 @@
   "profile": "load_store_address_preparation",
   "sources": [
     "rtl/generated/platform_pkg.sv",
-    "rtl/core/single_lane_pkg.sv",
-    "rtl/frontend/decode_single.sv",
-    "rtl/execute/execute_single.sv",
-    "rtl/execute/load_store_prepare.sv"
+    "rtl/core/core_pkg.sv",
+    "rtl/frontend/decoder.sv",
+    "rtl/execute/execute_unit.sv",
+    "rtl/memory/load_store_prepare.sv"
   ],
-  "lint_config": "config/fetch_execution_core.vlt",
+  "lint_config": "config/cpu_top.vlt",
   "seeds": [
     1,
     42,

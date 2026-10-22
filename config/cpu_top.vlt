@@ -1,0 +1,11 @@
+`verilator_config
+lint_off -rule PINCONNECTEMPTY -file "*execution_backend.sv"
+lint_off -rule PINCONNECTEMPTY -file "*control_flow_pipeline.sv"
+lint_off -rule PINCONNECTEMPTY -file "*alu_pipeline.sv"
+lint_off -rule UNUSEDPARAM -file "*platform_pkg.sv"
+lint_off -rule UNUSEDSIGNAL -file "*execute_unit.sv" -match "*decoded_i*"
+lint_off -rule UNUSEDPARAM -file "*memory_protocol_pkg.sv"
+lint_off -rule PINCONNECTEMPTY -file "*cpu_top.sv"
+lint_off -rule UNUSEDSIGNAL -file "*csr_unit.sv" -match "*decoded*"
+lint_off -rule UNUSEDSIGNAL -file "*cpu_top.sv" -match "*trap_ready_i*"
+lint_off -rule UNUSEDSIGNAL -file "*head_system_controller.sv" -match "*decoded*"

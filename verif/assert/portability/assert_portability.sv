@@ -36,7 +36,7 @@ module assert_portability #(
   end
 
 `ifndef SYNTHESIS
-  // Clocked assertions observe state before this edge's nonblocking updates.
+  // clocked assertions observe state before this edge's nonblocking updates.
   always_ff @(posedge clk_i) begin
     no_duplicate: assert (!(accepted[0] && accepted[1])) else $fatal(1, "PORT_DUPLICATE");
     if (initialized_o && (!rst_i || MUTATION == 3)) begin

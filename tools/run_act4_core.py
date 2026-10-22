@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.act4_tools import CHECKOUT, SAIL, environment
 from tools.check_act4 import check_harness, check_upstream, check_sail
-from tools.run_single_lane import build_core
 from tools.run_sail_differential import build_fetched
 from verif.arch.elf_image import load_elf
 from verif.core.programs import constant, i, store, branch
@@ -24,14 +23,10 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-# Memory map hardcoded by the bench drivers (both cores share it).
+# Memory map hardcoded by the bench driver.
 BENCH_MAP = [('bram', 0, 0x10000), ('uart', 0x10000000, 0x10), ('gpio', 0x10001000, 0x20)]
-DUTS = {
-    'single': dict(core='config/single_lane.json', selection='config/act4_single_lane.json',
-                   driver='verif/core/single_lane_tb.cpp', out='out/act4_single_lane', modes=['act4']),
-    'fetched': dict(core='config/memory_core.json', selection='config/act4_fetched.json',
-                    driver='verif/core/fetched_core_tb.cpp', out='out/act4_fetched', modes=['normal', 'stall']),
-}
+DUT = dict(name='fetched', core='config/memory_core.json', selection='config/act4_fetched.json',
+           driver='verif/core/fetched_core_tb.cpp', out='out/act4_fetched', modes=['normal', 'stall'])
 
 
 def check_selection(selection, checkout):
@@ -53,11 +48,10 @@ def check_selection(selection, checkout):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dut', choices=tuple(DUTS), default='single')
     parser.add_argument('--checkout', type=Path, default=CHECKOUT)
     parser.add_argument('--sail', type=Path, default=SAIL)
     args = parser.parse_args()
-    dut = DUTS[args.dut]
+    dut = DUT
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     checkout, sail = args.checkout.resolve(), args.sail.resolve()
     lock, suite = check_harness()
@@ -87,14 +81,13 @@ def main():
     paths = config['sources'] + [dut['core'], dut['selection'],
         'config/act4.lock', 'config/act4_tools.lock', 'config/references.lock', 'config/platform.yaml',
         'config/memory_protocol.yaml', 'config/commit_event.yaml', 'config/toolchain.lock',
-        'tools/run_act4_core.py', 'tools/run_single_lane.py', 'tools/act4_tools.py', 'tools/check_act4.py',
+        'tools/run_act4_core.py', 'tools/act4_tools.py', 'tools/check_act4.py',
         'tools/gen_platform.py', dut['driver'], 'verif/arch/elf_image.py']
-    if args.dut == 'fetched':
-        paths += [config['lint_config'], 'tools/run_sail_differential.py', 'verif/unit/packed_bits.hpp']
+    paths += [config['lint_config'], 'tools/run_sail_differential.py', 'verif/common/packed_bits.hpp']
     paths += [str(p.relative_to(ROOT)) for p in sorted((ROOT/lock['harness']['directory']).iterdir()) if p.is_file()]
     inputs = {p: digest(ROOT/p) for p in paths}
     upstream = {name: digest(checkout/'tests'/name) for name in tests}
-    fingerprint = {'dut': args.dut, 'inputs': inputs, 'upstream': upstream, 'suite_revision': suite['revision'],
+    fingerprint = {'dut': dut['name'], 'inputs': inputs, 'upstream': upstream, 'suite_revision': suite['revision'],
                    'versions': versions, 'sail_sha256': digest(sail)}
     run_hash = hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode()).hexdigest()
     out = ROOT/dut['out']/run_hash[:16]
@@ -118,7 +111,7 @@ def main():
         elif result.returncode:
             raise RuntimeError(f'command failed; see {out/log}\n{result.stdout[-4000:]}')
         return result.stdout
-    print(f'ACT4 {args.dut} build: {len(tests)} selected tests, Sail {lock["tools"]["sail_riscv"]}', flush=True)
+    print(f'ACT4 {dut["name"]} build: {len(tests)} selected tests, Sail {lock["tools"]["sail_riscv"]}', flush=True)
     run(['bundle', 'exec', 'uv', 'run', '--frozen', '--no-sync', 'act', ROOT/lock['harness']['directory']/lock['harness']['config'],
          '--test-dir', selected, '--workdir', out/'work', '--jobs', '2'],
         'build.log', run_env=env, cwd=checkout)
@@ -126,7 +119,7 @@ def main():
     expected = {str(Path(t).with_suffix('.elf')) for t in tests}
     actual = {str(p.relative_to(elfdir)) for p in elfdir.rglob('*.elf')}
     if actual != expected: raise RuntimeError(f'ACT4 output selection mismatch: missing={expected-actual}, extra={actual-expected}')
-    binary = build_fetched(out/'obj_dir')[0] if args.dut == 'fetched' else build_core(config)
+    binary = build_fetched(out/'obj_dir')[0]
     modes = dut['modes']
     def driver(image, seed, limit, tohost, mode=modes[0]):
         return [binary, image, seed, limit, mode, tohost]
@@ -159,9 +152,8 @@ def main():
         ('fail', constant(1, 0x8000)+[i(2,0,3), store(1,2,0,2), branch(0,0,0)], 'ACT4 FAIL tohost=3', modes[0]),
         ('timeout', [branch(0,0,0)], 'ACT4 instruction limit without tohost completion', modes[0]),
     ]
-    if args.dut == 'fetched':
-        negatives.append(('undrained_tohost', constant(1, 0x8000)+[i(2,0,1), store(1,2,0,2), branch(0,0,0)],
-                          'ACT4 tohost store did not drain', 'hold_drain'))
+    negatives.append(('undrained_tohost', constant(1, 0x8000)+[i(2,0,1), store(1,2,0,2), branch(0,0,0)],
+                      'ACT4 tohost store did not drain', 'hold_drain'))
     for name, words, error, mode in negatives:
         path = out/f'{name}.bin'
         path.write_bytes(struct.pack('<'+'I'*len(words), *words))
@@ -172,7 +164,7 @@ def main():
     receipt.write_text(json.dumps({**fingerprint, 'schema': 1, 'profile': selection['profile'], 'modes': modes,
         'runs': results, 'selected_tests': len(tests), 'deferred_tests': selection['deferred_tests'],
         'unexpected_skips': 0, 'negative_checks': checks, **acceptance}, indent=2)+'\n')
-    print(f'ACT4 {args.dut} core: PASS ({len(tests)} tests, {len(results)} runs, zero unexpected skips, '
+    print(f'ACT4 {dut["name"]} core: PASS ({len(tests)} tests, {len(results)} runs, zero unexpected skips, '
           f'{len(checks)} negative checks)', flush=True)
     print(f'Receipt: {receipt.relative_to(ROOT)}')
 

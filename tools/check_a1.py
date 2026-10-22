@@ -18,9 +18,9 @@ RECEIPTS = {
 }
 TOPS = {"prf_4r2w": 2016, "a1_select_probe": 0, TOP: 2016}
 BASE = {"config/prf_contract.json", "config/toolchain.lock"}
-PROBE = BASE | set(SOURCES) | {"tools/run_a1_probe.py", "verif/unit/a1_backend_probe_tb.cpp", "config/synthesis.lock"}
+PROBE = BASE | set(SOURCES) | {"tools/run_a1_probe.py", "verif/backend/a1_backend_probe_tb.cpp", "config/synthesis.lock"}
 INPUTS = {
-    "prf": BASE | {SOURCES[0], "tools/run_prf_check.py", "verif/unit/prf_4r2w_tb.cpp"},
+    "prf": BASE | {SOURCES[0], "tools/run_prf_check.py", "verif/backend/prf_4r2w_tb.cpp"},
     "rtl": PROBE,
     "generic": PROBE,
     "timing": PROBE | {"config/a1_timing.json", "config/a1_timing.lock", "synth/a1_timing.tcl",

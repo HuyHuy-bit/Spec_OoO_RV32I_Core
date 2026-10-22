@@ -3,9 +3,9 @@
   "profile": "three_client_single_outstanding_data_port",
   "sources": [
     "rtl/generated/memory_protocol_pkg.sv",
-    "rtl/execute/data_port_arbiter.sv"
+    "rtl/memory/data_port_arbiter.sv"
   ],
-  "lint_config": "config/fetch_two_wide.vlt",
+  "lint_config": "config/fetch_unit.vlt",
   "seeds": [
     1,
     42,

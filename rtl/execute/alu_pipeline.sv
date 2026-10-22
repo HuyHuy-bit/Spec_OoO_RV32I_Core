@@ -1,16 +1,20 @@
 `default_nettype none
+// one-entry alu producer (issue port 1): executes alu/lui/auipc and holds the result until completion.
 module alu_pipeline (
-  input wire clk_i, rst_i, flush_i,
-  input wire launch_i,
+  // inputs
+  input  wire clk_i, rst_i, flush_i,
+  input  wire launch_i,
+  input  wire [12:0] id_i,
+  input  wire [31:0] instruction_i, pc_i, source1_i, source2_i,
+  input  wire take_i,
+
+  // outputs
   output wire ready_o,
-  input wire [12:0] id_i,
-  input wire [31:0] instruction_i, pc_i, source1_i, source2_i,
   output wire valid_o,
   output logic [12:0] id_o,
-  output commit_event_pkg::commit_event_t event_o,
-  input wire take_i
+  output commit_event_pkg::commit_event_t event_o
 );
-  import single_lane_pkg::*;
+  import core_pkg::*;
   import commit_event_pkg::*;
   decoded_t decoded;
   wire [31:0] result, next_pc;
@@ -21,14 +25,16 @@ module alu_pipeline (
   assign valid_o = pending_q && !rst_i && !flush_i;
   assign ready_o = !rst_i && !flush_i && (!pending_q || take_i);
 
-  decode_single decode (.instruction_i, .decoded_o(decoded));
-  execute_single execute (
+  // decode and arithmetic execution
+  decoder decode (.instruction_i, .decoded_o(decoded));
+  execute_unit execute (
     .decoded_i(decoded), .pc_i, .instruction_i, .source1_i, .source2_i,
     .csr_value_i(32'd0), .mepc_i(32'd0), .csr_legal_i(1'b0),
     .result_o(result), .next_pc_o(next_pc), .address_o(),
     .trap_o(execute_trap), .cause_o(), .trap_value_o(), .taken_o()
   );
 
+  // completion event construction
   always_comb begin
     built = '0;
     built.valid = 1;
@@ -48,7 +54,8 @@ module alu_pipeline (
     end
   end
 
-  // A held result is replaced only by accepted completion plus a new launch.
+  // result holding and replacement
+  // a held result is replaced only by accepted completion plus a new launch.
   always_ff @(posedge clk_i) begin
     if (rst_i || flush_i) pending_q <= 0;
     else begin
@@ -61,6 +68,7 @@ module alu_pipeline (
     end
   end
 
+  // checks
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) begin
     if (!rst_i && !flush_i) begin

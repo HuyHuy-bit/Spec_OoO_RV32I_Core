@@ -11,13 +11,13 @@ from tools.check_two_wide import evaluate
 
 DIFF, ACT = 'sail-fetched-differential-check', 'act4-fetched-check'
 CONTRACT = {
-    'commands': ['rob-two-wide-check', DIFF, ACT],
+    'commands': ['reorder-buffer-check', DIFF, ACT],
     'children': {
         DIFF: {'config': 'diff.json', 'reference': 'sail', 'negatives': ['fatal', 'short_trace']},
         ACT: {'config': 'act.json', 'modes': ['normal', 'stall'], 'negatives': {'fail': 'ACT4 FAIL tohost=3'}},
     },
     'requirements': [
-        {'id': 'dual_lane_flow', 'text': 'dual', 'units': {'rob_two_wide': ['dual_retire']}},
+        {'id': 'dual_lane_flow', 'text': 'dual', 'units': {'reorder_buffer': ['dual_retire']}},
         {'id': 'identity_wraparound', 'text': 'wrap', 'differentials': {DIFF: ['rob_generation_wrap']}},
         {'id': 'rename_ownership_proof', 'text': 'formal', 'formal': 'proof'},
         {'id': 'selected_act4', 'text': 'act4', 'differentials': {ACT: []}},
@@ -36,7 +36,7 @@ class TwoWideCheckerTest(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.write('rtl.sv', 'module m; endmodule\n')
         rtl = {'rtl.sv': self.hash('rtl.sv')}
-        self.write('evidence/receipts/rob_two_wide.json', dict(
+        self.write('evidence/receipts/reorder_buffer.json', dict(
             status='pass', mutations_detected=['m'], inputs_sha256=rtl, simulations=[{'dual_retire': 0}, {'dual_retire': 3}]))
 
         self.write('diff.json', dict(profile='diff', seeds=[1, 42], extra_modes=['stall'], long_run={'seed': 7},
@@ -80,7 +80,7 @@ class TwoWideCheckerTest(unittest.TestCase):
         self.archive(self.jobs)
 
         self.write('rob.log', 'ok')
-        self.steps = {'rob-two-wide-check': self.step('rob.log'),
+        self.steps = {'reorder-buffer-check': self.step('rob.log'),
                       DIFF: self.step('diff.log', 'd/receipt.json'), ACT: self.step('act.log', 'a/receipt.json')}
 
     def tearDown(self):
@@ -131,16 +131,16 @@ class TwoWideCheckerTest(unittest.TestCase):
         self.assertEqual(self.evaluate(contract=contract)[::2], ('not_promoted', ['G1']))
 
     def test_rejects_missing_failed_and_unmutated_evidence(self):
-        missing = dict(self.steps); del missing['rob-two-wide-check']
-        failed = copy.deepcopy(self.steps); failed['rob-two-wide-check']['returncode'] = 2
+        missing = dict(self.steps); del missing['reorder-buffer-check']
+        failed = copy.deepcopy(self.steps); failed['reorder-buffer-check']['returncode'] = 2
         for steps, message in ((missing, 'missing or changed command'), (failed, 'failed command')):
             with self.assertRaisesRegex(ValueError, message): self.evaluate(steps)
-        self.write('evidence/receipts/rob_two_wide.json', dict(status='pass', mutations_detected=[], inputs_sha256={}, simulations=[]))
+        self.write('evidence/receipts/reorder_buffer.json', dict(status='pass', mutations_detected=[], inputs_sha256={}, simulations=[]))
         with self.assertRaisesRegex(ValueError, 'did not pass'): self.evaluate()
 
     def test_rejects_stale_child_input(self):
         self.write('rtl.sv', 'module changed; endmodule\n')
-        with self.assertRaisesRegex(ValueError, 'stale rob_two_wide input'): self.evaluate()
+        with self.assertRaisesRegex(ValueError, 'stale reorder_buffer input'): self.evaluate()
 
     def test_rejects_changed_receipt_or_log(self):
         for path in ('a/receipt.json', 'act.log', 'rob.log'):
@@ -169,6 +169,19 @@ class TwoWideCheckerTest(unittest.TestCase):
         self.rejects('does not bind', 'd/receipt.json', lambda d: d['inputs'].pop('diff.json'))
         self.write('d/core_42_stall.log', 'different')
         with self.assertRaisesRegex(ValueError, 'artifact mismatch'): self.evaluate()
+
+    def test_command_and_gate_evidence(self):
+        self.write('two.json', {'gates': 1})
+        self.write('evidence/receipts/b.json', dict(status='promoted', contract='two.json', contract_sha256=self.hash('two.json')))
+        contract = dict(CONTRACT, requirements=[{'id': 'c', 'text': 'c', 'commands': ['reorder-buffer-check'],
+                                                 'gates': ['evidence/receipts/b.json']}])
+        self.assertEqual(self.evaluate(contract=contract)[1][0]['evidence'], ['rob.log', 'evidence/receipts/b.json'])
+        with self.assertRaisesRegex(ValueError, 'not a contract command'):
+            self.evaluate(contract=dict(contract, requirements=[{'id': 'c', 'text': 'c', 'commands': ['absent']}]))
+        self.write('two.json', {'gates': 2})
+        with self.assertRaisesRegex(ValueError, 'contract changed'): self.evaluate(contract=contract)
+        self.write('evidence/receipts/b.json', dict(status='not_promoted'))
+        with self.assertRaisesRegex(ValueError, 'is not promoted'): self.evaluate(contract=contract)
 
     def test_rejects_missing_formal_proof_cover_or_mutation(self):
         for index, change, message in ((2, dict(status='FAIL'), 'formal proof'),

@@ -1,14 +1,18 @@
 `default_nettype none
+// two-wide rename state: speculative rat, committed rat, free list and ready bits.
 module rename_state (
-  input wire clk_i, rst_i, recover_i, resources_ready_i,
-  input wire branch_recover_i,
-  input wire [191:0] branch_rat_i,
-  input wire [63:0] branch_reclaim_i,
-  input wire [1:0] valid_i, checkpoint_i,
-  input wire [9:0] rs1_i, rs2_i, rd_i,
-  input wire [1:0] wb_accept_i, commit_i,
-  input wire [11:0] wb_destination_i, commit_destination_i, commit_stale_i,
-  input wire [9:0] commit_rd_i,
+  // inputs
+  input  wire clk_i, rst_i, recover_i, resources_ready_i,
+  input  wire branch_recover_i,
+  input  wire [191:0] branch_rat_i,
+  input  wire [63:0] branch_reclaim_i,
+  input  wire [1:0] valid_i, checkpoint_i,
+  input  wire [9:0] rs1_i, rs2_i, rd_i,
+  input  wire [1:0] wb_accept_i, commit_i,
+  input  wire [11:0] wb_destination_i, commit_destination_i, commit_stale_i,
+  input  wire [9:0] commit_rd_i,
+
+  // outputs
   output wire [1:0] accept_o,
   output wire [11:0] source1_o, source2_o, destination_o, stale_o,
   output wire [3:0] source_ready_o,
@@ -24,6 +28,7 @@ module rename_state (
   assign free_o = free_q;
   assign ready_o = ready_q;
 
+  // writeback readiness bypass
   always_comb begin
     ready_view = ready_q;
     if (!rst_i && !recover_i)
@@ -32,6 +37,7 @@ module rename_state (
           ready_view[wb_destination_i[lane*6 +: 6]] = 1;
   end
 
+  // two-lane rename planning
   rename_bundle planner (
     .rst_i, .recover_i(recover_i || branch_recover_i), .resources_ready_i, .valid_i, .checkpoint_i,
     .rs1_i, .rs2_i, .rd_i, .rat_i(rat_q), .free_i(free_q), .ready_i(ready_view),
@@ -39,6 +45,7 @@ module rename_state (
     .source_ready_o, .allocation_o
   );
 
+  // mapping, free-list and recovery next state
   always_comb begin
     rat_d = rat_q;
     committed_d = committed_q;
@@ -48,7 +55,7 @@ module rename_state (
     for (int arch = 1; arch < 32; arch++)
       recovered_free[committed_q[arch*6 +: 6]] = 0;
 
-    // Retirement is ordered; lane one's stale mapping may be lane zero's destination.
+    // retirement is ordered; lane one's stale mapping may be lane zero's destination.
     for (int lane = 0; lane < 2; lane++) begin
       if (commit_i[lane] && commit_rd_i[lane*5 +: 5] != 0) begin
         committed_d[commit_rd_i[lane*5 +: 5]*6 +: 6] = commit_destination_i[lane*6 +: 6];
@@ -85,6 +92,7 @@ module rename_state (
     end
   end
 
+  // rename state update
   always_ff @(posedge clk_i) begin
     rat_q <= rat_d;
     committed_q <= committed_d;
@@ -92,8 +100,9 @@ module rename_state (
     ready_q <= ready_d;
   end
 
+  // checks
 `ifndef SYNTHESIS
-  // The ROB and completion arbiter must supply live, ordered, already accepted events.
+  // the rob and completion arbiter must supply live, ordered, already accepted events.
   always_ff @(posedge clk_i) begin : ownership_checks
     logic [191:0] commit_walk;
     logic [63:0] released, destinations;

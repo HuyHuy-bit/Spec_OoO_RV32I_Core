@@ -1,18 +1,23 @@
 `default_nettype none
+// 64 x 32-bit physical register file, 4 read and 2 write ports with write-to-read bypass; p0 reads zero.
 module prf_4r2w (
+  // inputs
   input  wire         clk_i,
   input  wire         rst_i,
   input  wire [23:0]  raddr_i,
-  output wire [127:0] rdata_o,
   input  wire [1:0]   wb_accept_i,
   input  wire [11:0]  waddr_i,
-  input  wire [63:0]  wdata_i
+  input  wire [63:0]  wdata_i,
+
+  // outputs
+  output wire [127:0] rdata_o
 );
-  // Lane zero occupies the low slice; accepted writebacks are already filtered for kills.
+  // lane zero occupies the low slice; accepted writebacks are already filtered for kills.
   wire [1:0] write_en = wb_accept_i & {2{!rst_i}};
   logic [31:0] payload_q [1:63];
 
-  // Payloads have no reset value; p0 has no storage.
+  // accepted register writes
+  // payloads have no reset value; p0 has no storage.
   for (genvar entry = 1; entry < 64; entry++) begin : g_entry
     always_ff @(posedge clk_i) begin
       if (write_en[0] && waddr_i[0 +: 6] == 6'(entry))
@@ -22,6 +27,7 @@ module prf_4r2w (
     end
   end
 
+  // operand reads and writeback bypass
   for (genvar port = 0; port < 4; port++) begin : g_read
     wire [5:0] address = raddr_i[port*6 +: 6];
     logic [31:0] value;
@@ -38,8 +44,9 @@ module prf_4r2w (
     assign rdata_o[port*32 +: 32] = value;
   end
 
+  // checks
 `ifndef SYNTHESIS
-  // Concurrent writes to one live physical destination violate backend ownership.
+  // concurrent writes to one live physical destination violate backend ownership.
   always_ff @(posedge clk_i) begin
     assert (!(write_en == 2'b11 && waddr_i[0 +: 6] != 6'd0
               && waddr_i[0 +: 6] == waddr_i[6 +: 6]))
