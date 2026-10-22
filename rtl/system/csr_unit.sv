@@ -146,8 +146,10 @@ module csr_unit (
         {csr_q[CSR_INDEX_MINSTRETH], csr_q[CSR_INDEX_MINSTRET]} <= {csr_q[CSR_INDEX_MINSTRETH], csr_q[CSR_INDEX_MINSTRET]} + 64'(increment);
       for (int e = 0; e < 4; e++) begin
         for (int i = 0; i < CSR_COUNT; i++) begin
+          // the static mask is redundant (effects never exceed it) but lets synthesis drop constant bits
           if (commit_state && effects_q[e].valid && effects_q[e].write_mask != 0 && effects_q[e].address == CSR_ADDRESSES[i])
-            csr_q[i] <= (csr_q[i] & ~effects_q[e].write_mask) | (effects_q[e].new_value & effects_q[e].write_mask);
+            csr_q[i] <= (csr_q[i] & ~(effects_q[e].write_mask & CSR_WRITE_MASKS[i]))
+              | (effects_q[e].new_value & effects_q[e].write_mask & CSR_WRITE_MASKS[i]);
         end
       end
     end
@@ -160,6 +162,10 @@ module csr_unit (
       assert (retire_count_i <= 2) else $fatal(1, "CSR2_RETIRE_COUNT");
       assert (!(pending_q || request_valid_i || cancel_i) || retire_count_i == 0)
         else $fatal(1, "CSR2_SERIALIZE");
+      for (int e = 0; e < 4; e++)
+        for (int i = 0; i < CSR_COUNT; i++)
+          assert (!(commit_state && effects_q[e].valid && effects_q[e].address == CSR_ADDRESSES[i])
+                  || (effects_q[e].write_mask & ~CSR_WRITE_MASKS[i]) == 0) else $fatal(1, "CSR2_EFFECT_MASK");
     end
   end
 `endif

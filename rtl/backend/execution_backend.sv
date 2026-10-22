@@ -1,7 +1,7 @@
 `default_nettype none
 // execution backend: decode, issue queue, alu/branch producers, head system/memory service and early loads.
 module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMORY_SERVICE = 0,
-  parameter bit EARLY_LOADS = 0) (
+  parameter bit EARLY_LOADS = 0, parameter bit TRACE = 1) (
   // inputs
   input  wire clk_i, rst_i, flush_i, drained_i,
   input  wire [1:0] valid_i,
@@ -86,10 +86,12 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
   assign illegal_accept = illegal_offer && backend_complete_accept[0];
   wire [3:0] eligible;
   wire [127:0] issue_payload, read_data;
-  logic [31:0] prediction_pc_q [32];
-  logic [31:0] prediction_taken_q;
-  logic [11:0] prediction_checkpoint_q [32];
-  assign redirect_checkpoint_o = prediction_checkpoint_q[resolve_id_o[4:0]];
+  // fetch-time prediction of each in-flight cfi, indexed by the rename checkpoint the cfi holds
+  wire [2:0] allocate_checkpoint, issue_checkpoint, resolve_checkpoint;
+  logic [31:0] prediction_pc_q [8];
+  logic [7:0] prediction_taken_q;
+  logic [11:0] prediction_checkpoint_q [8];
+  assign redirect_checkpoint_o = prediction_checkpoint_q[resolve_checkpoint];
   wire [127:0] payload;
   wire [63:0] executable_instruction;
   commit_event_pkg::commit_event_t [1:0] producer_event;
@@ -102,7 +104,9 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
   assign completion_id_o[25:13] = lsu_complete ? lsu_complete_id : alu1_id;
   assign producer_event[1] = lsu_complete ? lsu_event : alu1_event;
   logic [31:0] fault_q;
-  logic [31:0] fault_instruction_q [32], fault_pc_q [32], fault_cause_q [32], fault_value_q [32];
+  // the rob keeps a 4-bit cause and takes pc from its own entry; instruction and pc here feed the trace only.
+  logic [31:0] fault_instruction_q [32], fault_pc_q [32], fault_value_q [32];
+  logic [3:0] fault_cause_q [32];
   wire producer_flush = flush_i || trap_accept_o;
   wire cancel_alu1 = redirect_o && 5'(alu1_id[4:0] - head_id_o[4:0])
       > 5'(resolve_id_o[4:0] - head_id_o[4:0]);
@@ -136,16 +140,18 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
       if (allocate_accept_o[lane]) begin
         fault_q[slot] <= frontend_fault_i[lane];
         if (frontend_fault_i[lane]) begin
-          fault_instruction_q[slot] <= instruction_i[lane*32 +: 32];
-          fault_pc_q[slot] <= pc_i[lane*32 +: 32];
-          fault_cause_q[slot] <= frontend_cause_i[lane*32 +: 32];
+          if (TRACE) begin
+            fault_instruction_q[slot] <= instruction_i[lane*32 +: 32];
+            fault_pc_q[slot] <= pc_i[lane*32 +: 32];
+          end
+          fault_cause_q[slot] <= frontend_cause_i[lane*32 +: 4];
           fault_value_q[slot] <= frontend_value_i[lane*32 +: 32];
         end
       end
       if (allocate_accept_o[lane] && cfi[lane]) begin
-        prediction_pc_q[slot] <= predicted_pc_i[lane*32 +: 32];
-        prediction_taken_q[slot] <= predicted_taken_i[lane];
-        prediction_checkpoint_q[slot] <= predicted_checkpoint_i[lane*12 +: 12];
+        prediction_pc_q[allocate_checkpoint] <= predicted_pc_i[lane*32 +: 32];
+        prediction_taken_q[allocate_checkpoint] <= predicted_taken_i[lane];
+        prediction_checkpoint_q[allocate_checkpoint] <= predicted_checkpoint_i[lane*12 +: 12];
       end
     end
   end
@@ -160,11 +166,11 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
         completion_event_o[lane] = '0;
         completion_event_o[lane].valid = 1;
         completion_event_o[lane].privilege = 3;
-        completion_event_o[lane].instruction = fault_instruction_q[slot];
-        completion_event_o[lane].pc_before = fault_pc_q[slot];
-        completion_event_o[lane].pc_after = fault_pc_q[slot];
+        completion_event_o[lane].instruction = TRACE ? fault_instruction_q[slot] : 32'd0;
+        completion_event_o[lane].pc_before = TRACE ? fault_pc_q[slot] : 32'd0;
+        completion_event_o[lane].pc_after = TRACE ? fault_pc_q[slot] : 32'd0;
         completion_event_o[lane].trap = 1;
-        completion_event_o[lane].trap_cause = fault_cause_q[slot];
+        completion_event_o[lane].trap_cause = 32'(fault_cause_q[slot]);
         completion_event_o[lane].trap_value = fault_value_q[slot];
       end
     end
@@ -176,7 +182,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
     .clk_i, .rst_i, .flush_i(producer_flush), .launch_i(issue_o[0]), .ready_o(producer_ready[0]), .busy_o(producer_busy_o[0]),
     .id_i(issue_id_o[12:0]), .instruction_i(issue_payload[31:0]), .pc_i(issue_payload[63:32]),
     .source1_i(read_data[31:0]), .source2_i(read_data[63:32]),
-    .predicted_taken_i(prediction_taken_q[issue_id_o[4:0]]), .predicted_pc_i(prediction_pc_q[issue_id_o[4:0]]),
+    .predicted_taken_i(prediction_taken_q[issue_checkpoint]), .predicted_pc_i(prediction_pc_q[issue_checkpoint]),
     .valid_o(completion_valid_o[0]), .id_o(completion_id_o[12:0]), .event_o(producer_event[0]),
     .take_i(completion_accept_o[0]), .resolve_valid_o, .taken_o(resolve_taken_o),
     .mispredict_o(resolve_mispredict_o), .next_pc_o(resolve_pc_o), .resolve_take_i(resolve_accept_o)
@@ -199,7 +205,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
     wire [12:0] system_id;
     wire [31:0] system_instruction, owner_pc;
     wire [11:0] dispatch_sources, lsu_head_sources;
-    wire [31:0] lsu_head_instruction, lsu_head_pc;
+    wire [31:0] lsu_head_instruction;
     wire memory_head = EARLY_LOADS ? lsu_head_memory : owner_memory && system_id == head_id_o;
     assign system_sources = EARLY_LOADS && memory_read ? lsu_head_sources : dispatch_sources;
     assign head_read = (owner_valid && !owner_memory) || memory_read;
@@ -250,7 +256,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
         .memory_valid_i((EARLY_LOADS ? lsu_head_memory : owner_valid && owner_memory) && !cancel_system_i),
         .memory_id_i(EARLY_LOADS ? head_id_o : system_id),
         .instruction_i(EARLY_LOADS ? lsu_head_instruction : system_instruction),
-        .pc_i(EARLY_LOADS ? lsu_head_pc : owner_pc),
+        .pc_i(EARLY_LOADS ? head_pc : owner_pc),
         .head_valid_i(head_valid), .head_id_i(head_id_o), .head_pc_i(head_pc),
         .source_ready_i(read_ready), .source1_i(read_data[31:0]), .source2_i(read_data[63:32]),
         .issue_allowed_i(memory_issue_allowed_i), .read_request_o(memory_read),
@@ -273,7 +279,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
       if (EARLY_LOADS) begin : early_loads
 
         // early-load scheduling and execution
-        load_store_unit lsu (
+        load_store_unit #(.TRACE(TRACE)) lsu (
           .clk_i, .rst_i, .flush_i(producer_flush), .recover_i(redirect_o), .recover_slot_i(resolve_id_o[4:0]),
           .head_valid_i(head_valid), .head_id_i(head_id_o),
           .allocate_valid_i(admitted), .allocate_memory_i(memory_op),
@@ -284,7 +290,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
           .issue_i(lsu_issue), .issue_id_i(issue_id_o[25:13]), .issue_instruction_i(issue_payload[95:64]),
           .issue_pc_i(issue_payload[127:96]), .source1_i(read_data[95:64]), .source2_i(read_data[127:96]),
           .retire_i(retire_accept_o[0]),
-          .head_memory_o(lsu_head_memory), .head_instruction_o(lsu_head_instruction), .head_pc_o(lsu_head_pc),
+          .head_memory_o(lsu_head_memory), .head_instruction_o(lsu_head_instruction),
           .head_sources_o(lsu_head_sources), .issue_allowed_i(memory_issue_allowed_i),
           .committed_valid_i(memory_committed_o), .committed_address_i(committed_address),
           .committed_data_i(committed_data), .committed_mask_i(committed_mask),
@@ -305,10 +311,10 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
       end
     end
     if (!MEMORY_SERVICE) begin : unused_memory_owner
-      wire unused_owner = ^owner_pc ^ read_ready[1] ^ ^lsu_head_instruction ^ ^lsu_head_pc;
+      wire unused_owner = ^owner_pc ^ read_ready[1] ^ ^lsu_head_instruction;
     end
     if (!(MEMORY_SERVICE && EARLY_LOADS)) begin : no_lsu_head
-      assign {lsu_head_instruction, lsu_head_pc, lsu_head_sources} = 0;
+      assign {lsu_head_instruction, lsu_head_sources} = 0;
     end
     assign backend_trap_ready = system_trap_valid_o && trap_ready_i;
 
@@ -376,7 +382,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
   end
 
   // rename, issue and retirement
-  issue_backend backend (
+  issue_backend #(.TRACE(TRACE)) backend (
     .queue_skip_i(EARLY_LOADS ? system_op : serial_op), .head_read_i(head_read), .head_source_i(system_sources),
     .serial_offer_i(serial_offer), .serial_id_i(serial_id), .serial_event_i(serial_event), .serial_accept_o(serial_accept),
     .clk_i, .rst_i, .flush_i, .drained_i,
@@ -399,7 +405,8 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
     .issue_source_o(), .issue_payload_o(issue_payload), .read_data_o(read_data), .read_ready_o({unused_read_ready, read_ready}),
     .head_valid_o(head_valid), .head_id_o, .head_pc_o(head_pc), .occupancy_o, .issue_occupancy_o, .identity_drain_o,
     .rat_o(), .committed_o(), .free_o(), .ready_o(),
-    .checkpoint_accept_o(), .checkpoint_id_o(), .checkpoint_valid_o, .checkpoint_released_o()
+    .checkpoint_accept_o(), .checkpoint_id_o(allocate_checkpoint), .checkpoint_valid_o, .checkpoint_released_o(),
+    .issue_checkpoint_o(issue_checkpoint), .resolve_checkpoint_o(resolve_checkpoint)
   );
 
   // checks
@@ -407,6 +414,9 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
   always_ff @(posedge clk_i) begin
     if (!rst_i) begin
       assert (valid_i != 2'b10) else $fatal(1, "CF_BACKEND_PREFIX");
+      for (int lane = 0; lane < 2; lane++)
+        assert (!(allocate_accept_o[lane] && frontend_fault_i[lane]) || frontend_cause_i[lane*32 +: 32] < 16)
+          else $fatal(1, "CF_FAULT_CAUSE");
       assert (!drained_i || producer_busy_o == 0) else $fatal(1, "CF_BACKEND_DRAIN");
       assert (!resolve_accept_o || (resolve_valid_o && resolve_grant_i)) else $fatal(1, "CF_BACKEND_RESOLVE");
       assert (!redirect_o || (allocate_accept_o == 0 && issue_o == 0 && retire_accept_o == 0))

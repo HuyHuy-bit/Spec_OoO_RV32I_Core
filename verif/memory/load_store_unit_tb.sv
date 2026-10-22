@@ -15,7 +15,7 @@ module load_store_unit_tb;
   wire allocate_ready, head_memory, complete_valid, busy, fatal, head_request_ready, head_response_valid;
   wire request_valid, response_ready;
   wire [12:0] complete_id;
-  wire [31:0] head_instruction, head_pc;
+  wire [31:0] head_instruction;
   wire [11:0] head_sources;
   commit_event_t event_out;
   localparam logic [31:0] LB = 32'h00310283;  // lb x5, 3(x2)
@@ -30,7 +30,7 @@ module load_store_unit_tb;
     .allocate_instruction_i(allocate_instruction), .allocate_pc_i(PC), .allocate_sources_i(12'd2),
     .issue_i(issue), .issue_id_i(issue_id), .issue_instruction_i(issue_instruction), .issue_pc_i(PC),
     .source1_i(base), .source2_i(store_data), .retire_i(1'b0),
-    .head_memory_o(head_memory), .head_instruction_o(head_instruction), .head_pc_o(head_pc),
+    .head_memory_o(head_memory), .head_instruction_o(head_instruction),
     .head_sources_o(head_sources), .issue_allowed_i(issue_allowed),
     .committed_valid_i(1'b0), .committed_address_i(32'd0), .committed_data_i(32'd0), .committed_mask_i(4'd0),
     .complete_valid_o(complete_valid), .complete_id_o(complete_id), .complete_event_o(event_out),

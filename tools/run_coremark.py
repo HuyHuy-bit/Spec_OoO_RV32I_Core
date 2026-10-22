@@ -132,7 +132,7 @@ def main():
     for profile in () if args.census_only else PROFILES:
         config = json.loads((ROOT/f'config/{profile}.json').read_text())
         inputs = digest(image, *(ROOT/s for s in config['sources'] + [f'config/{profile}.json', config['lint_config'],
-                                                                     'verif/core/fetched_core_tb.cpp']))
+                                                                     'verif/core/fetched_core_tb.cpp', 'verif/core/trace_lockstep.sv']))
         binary = None
         for latency in LATENCIES:
             done = next((r for r in previous if (r['profile'], r['latency'], r.get('inputs_sha256'))

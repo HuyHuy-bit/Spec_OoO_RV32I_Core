@@ -1,6 +1,6 @@
 `default_nettype none
 // two-wide rename + rob + prf core: allocation, completion, branch resolution and in-order retirement.
-module rename_rob (
+module rename_rob #(parameter bit TRACE = 1) (
   // inputs
   input  wire clk_i, rst_i, flush_i, drained_i,
   input  wire resources_ready_i,
@@ -46,7 +46,10 @@ module rename_rob (
   output wire [63:0] free_o, ready_o,
   output wire checkpoint_accept_o,
   output wire [2:0] checkpoint_id_o,
-  output wire [7:0] checkpoint_valid_o, checkpoint_released_o
+  output wire [7:0] checkpoint_valid_o, checkpoint_released_o,
+  // checkpoint held by the cfi in a rob slot: the issuing slot and the resolving one
+  input  wire [4:0] lookup_slot_i,
+  output wire [2:0] lookup_checkpoint_o, resolve_checkpoint_o
 );
   wire [1:0] rob_allocate_ready, rob_allocate_accept, rob_complete_ready;
   wire [11:0] rob_wb_destination;
@@ -95,6 +98,8 @@ module rename_rob (
       if (allocate_accept_o[lane] && cfi_i[lane])
         checkpoint_q[allocate_id_o[lane*13 +: 5]] <= checkpoint_id_o;
   end
+  assign lookup_checkpoint_o = checkpoint_q[lookup_slot_i];
+  assign resolve_checkpoint_o = checkpoint_q[resolve_id_i[4:0]];
 
   // rename and recovery
   rename_recovery rename_owner (
@@ -105,7 +110,7 @@ module rename_rob (
     .wb_accept_o, .commit_i(commit_request), .commit_accept_o(rename_commit),
     .commit_rd_i(retire_rd_o), .commit_destination_i(retire_destination_o), .commit_stale_i(retire_stale_o),
     .resolve_i(resolve_offer_i && resolve_grant_i), .resolve_live_i(rob_resolve_ready),
-    .mispredict_i, .resolve_id_i(checkpoint_q[resolve_id_i[4:0]]),
+    .mispredict_i, .resolve_id_i(resolve_checkpoint_o),
     .resolve_accept_o(rename_resolve), .branch_recover_o(rename_recover),
     .accept_o(allocate_accept_o), .source1_o, .source2_o, .destination_o, .stale_o, .source_ready_o,
     .allocation_o(allocation), .rat_o, .committed_o, .free_o, .ready_o,
@@ -113,7 +118,7 @@ module rename_rob (
   );
 
   // reorder buffer and retirement
-  reorder_buffer rob (
+  reorder_buffer #(.TRACE(TRACE)) rob (
     .clk_i, .rst_i, .flush_i, .drained_i,
     .allocate_i(allocate_accept_o), .allocate_cfi_i(cfi_i), .allocate_solo_i(solo_i),
     .allocate_rd_i(rd_i), .allocate_pc_i(pc_i), .allocate_destination_i(destination_o), .allocate_stale_i(stale_o),

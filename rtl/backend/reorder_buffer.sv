@@ -1,6 +1,6 @@
 `default_nettype none
 // two-wide 32-entry rob with 8-bit generations: allocation, completion, resolution, retirement and traps.
-module reorder_buffer (
+module reorder_buffer #(parameter bit TRACE = 1) (
   // inputs
   input  wire clk_i, rst_i, flush_i, drained_i,
   input  wire [1:0] allocate_i, allocate_cfi_i, allocate_solo_i,
@@ -50,7 +50,13 @@ module reorder_buffer (
   logic [4:0] rd_q [32];
   logic [31:0] pc_q [32];
   logic [5:0] destination_q [32], stale_q [32];
-  commit_event_t event_q [32];
+  // per-entry state the hardware reads: trap flag, then predictor bits or the 4-bit cause,
+  // then a branch's next pc or the trap value (other entries continue at pc+4). TRACE adds the full event record for reference comparison.
+  logic [31:0] trap_q;
+  logic [16:0] info_q [32];
+  logic [31:0] aux_q [32];
+  commit_event_t head_event, second_event;
+  commit_event_t [1:0] trace_event;
   logic [4:0] head_q, tail_q, second_head, second_tail, resolve_slot;
   logic [5:0] count_q;
   logic [63:0] order_q;
@@ -79,12 +85,12 @@ module reorder_buffer (
   assign serial_accept_o = serial_selected && retire_accept_o[0];
 
   // precise trap delivery
-  assign trap_valid_o = head_valid_o && done_q[head_q] && event_q[head_q].trap;
+  assign trap_valid_o = head_valid_o && done_q[head_q] && trap_q[head_q];
   assign trap_accept_o = trap_valid_o && trap_take_i;
   always_comb begin
-    trap_event_o = event_q[head_q];
+    trap_event_o = head_event;
     trap_event_o.valid = trap_valid_o;
-    trap_event_o.order = order_q;
+    trap_event_o.order = TRACE ? order_q : 64'd0;
     trap_event_o.retired = 0;
   end
 
@@ -128,10 +134,10 @@ module reorder_buffer (
 
     retire_valid_o = 0;
     if (!rst_i && !clear_window && !branch_recover_o) begin
-      retire_valid_o[0] = serial_selected || (count_q != 0 && done_q[head_q] && !event_q[head_q].trap
+      retire_valid_o[0] = serial_selected || (count_q != 0 && done_q[head_q] && !trap_q[head_q]
         && (!cfi_q[head_q] || resolved_q[head_q]));
       retire_valid_o[1] = retire_valid_o[0] && count_q > 1 && done_q[second_head]
-        && !event_q[second_head].trap && (!cfi_q[second_head] || resolved_q[second_head])
+        && !trap_q[second_head] && (!cfi_q[second_head] || resolved_q[second_head])
         && !solo_q[head_q] && !solo_q[second_head];
     end
   end
@@ -140,11 +146,11 @@ module reorder_buffer (
     retire_rd_o = {rd_q[second_head], rd_q[head_q]};
     retire_destination_o = {destination_q[second_head], destination_q[head_q]};
     retire_stale_o = {stale_q[second_head], stale_q[head_q]};
-    retire_event_o[0] = serial_selected ? serial_event_i : event_q[head_q];
-    retire_event_o[1] = event_q[second_head];
+    retire_event_o[0] = serial_selected ? serial_event_i : head_event;
+    retire_event_o[1] = second_event;
     for (int lane = 0; lane < 2; lane++) begin
       retire_event_o[lane].valid = retire_valid_o[lane];
-      retire_event_o[lane].order = order_q + 64'(lane);
+      retire_event_o[lane].order = TRACE ? order_q + 64'(lane) : 64'd0;
       retire_event_o[lane].retired = 1;
     end
   end
@@ -214,9 +220,13 @@ module reorder_buffer (
         end
         for (int lane = 0; lane < 2; lane++)
           if (complete_accept_o[lane]) begin
-            done_q[complete_id_i[lane*13 +: 5]] <= 1;
-            event_q[complete_id_i[lane*13 +: 5]] <= complete_event_i[lane];
-            solo_q[complete_id_i[lane*13 +: 5]] <= solo_q[complete_id_i[lane*13 +: 5]] || complete_solo_i[lane];
+            automatic logic [4:0] slot = complete_id_i[lane*13 +: 5];
+            done_q[slot] <= 1;
+            trap_q[slot] <= complete_event_i[lane].trap;
+            info_q[slot] <= complete_event_i[lane].trap ? 17'(complete_event_i[lane].trap_cause[3:0])
+              : {complete_event_i[lane].instruction[19:15], complete_event_i[lane].instruction[11:0]};
+            aux_q[slot] <= complete_event_i[lane].trap ? complete_event_i[lane].trap_value : complete_event_i[lane].pc_after;
+            solo_q[slot] <= solo_q[slot] || complete_solo_i[lane];
           end
       end
       // reusing generation zero requires every external holder to acknowledge quiescence.
@@ -225,6 +235,32 @@ module reorder_buffer (
         for (int slot = 0; slot < 32; slot++) next_generation_q[slot] <= 0;
       end
     end
+  end
+
+  // retire/trap view: hardware fields from the per-entry state, everything else from the trace record
+  function automatic commit_event_t stored(logic [4:0] slot, commit_event_t trace);
+    stored = trace;
+    stored.pc_before = pc_q[slot];
+    stored.trap = trap_q[slot];
+    if (trap_q[slot]) begin
+      stored.trap_cause = 32'(info_q[slot][3:0]);
+      stored.trap_value = aux_q[slot];
+    end else begin
+      {stored.instruction[19:15], stored.instruction[11:0]} = info_q[slot];
+      stored.pc_after = cfi_q[slot] ? aux_q[slot] : pc_q[slot] + 32'd4;
+    end
+  endfunction
+  assign head_event = stored(head_q, trace_event[0]);
+  assign second_event = stored(second_head, trace_event[1]);
+
+  if (TRACE) begin : trace
+    commit_event_t event_q [32];
+    always_ff @(posedge clk_i)
+      for (int lane = 0; lane < 2; lane++)
+        if (complete_accept_o[lane]) event_q[complete_id_i[lane*13 +: 5]] <= complete_event_i[lane];
+    assign trace_event = {event_q[second_head], event_q[head_q]};
+  end else begin : physical
+    assign trace_event = '0;
   end
 
   // checks
@@ -246,6 +282,13 @@ module reorder_buffer (
         assert ((complete_take_i & ~(complete_offer_i & complete_ready_o)) == 0) else $fatal(1, "ROB2_COMPLETE");
         assert (!resolve_take_i || (resolve_offer_i && resolve_ready_o)) else $fatal(1, "ROB2_RESOLVE");
         assert (!trap_take_i || trap_valid_o) else $fatal(1, "ROB2_TRAP");
+        // entries keep a 4-bit cause; the trace view takes pc_before from pc_q
+        for (int lane = 0; lane < 2; lane++)
+          assert (!complete_accept_o[lane] || ((!TRACE || complete_event_i[lane].pc_before == pc_q[complete_id_i[lane*13 +: 5]])
+              && (!complete_event_i[lane].trap || complete_event_i[lane].trap_cause < 16)
+              && (!TRACE || complete_event_i[lane].trap || cfi_q[complete_id_i[lane*13 +: 5]]
+                  || complete_event_i[lane].pc_after == pc_q[complete_id_i[lane*13 +: 5]] + 32'd4)))
+            else $fatal(1, "ROB2_EVENT_CONTRACT");
       end
     end
   end

@@ -1,6 +1,6 @@
 `default_nettype none
 // rename_rob plus the 16-entry issue queue: renamed instructions wait here for operands and a port.
-module issue_backend (
+module issue_backend #(parameter bit TRACE = 1) (
   // inputs
   input  wire clk_i, rst_i, flush_i, drained_i,
   input  wire resources_ready_i,
@@ -56,7 +56,9 @@ module issue_backend (
   output wire [63:0] free_o, ready_o,
   output wire checkpoint_accept_o,
   output wire [2:0] checkpoint_id_o,
-  output wire [7:0] checkpoint_valid_o, checkpoint_released_o
+  output wire [7:0] checkpoint_valid_o, checkpoint_released_o,
+  // checkpoints of the cfi issuing on port 0 and of the resolving cfi
+  output wire [2:0] issue_checkpoint_o, resolve_checkpoint_o
 );
   wire [1:0] dispatch_ready;
   wire unused_serial_ready;
@@ -67,7 +69,7 @@ module issue_backend (
   wire [1:0] selected = {valid_i[1] && !cfi_i[0], valid_i[0]};
 
   // rename, register storage and retirement
-  rename_rob backend (
+  rename_rob #(.TRACE(TRACE)) backend (
     .clk_i, .rst_i, .flush_i, .drained_i,
     .resources_ready_i(resources_ready_i && (selected & ~queue_skip_i & ~dispatch_ready) == 0),
     .valid_i, .cfi_i, .solo_i, .rs1_i, .rs2_i, .rd_i, .pc_i,
@@ -84,7 +86,8 @@ module issue_backend (
     .read_address_i(read_address), .read_data_o, .read_ready_o,
     .head_valid_o, .head_id_o, .head_pc_o, .occupancy_o, .identity_drain_o,
     .rat_o, .committed_o, .free_o, .ready_o,
-    .checkpoint_accept_o, .checkpoint_id_o, .checkpoint_valid_o, .checkpoint_released_o
+    .checkpoint_accept_o, .checkpoint_id_o, .checkpoint_valid_o, .checkpoint_released_o,
+    .lookup_slot_i(issue_id_o[4:0]), .lookup_checkpoint_o(issue_checkpoint_o), .resolve_checkpoint_o
   );
 
   // operand wakeup and issue scheduling

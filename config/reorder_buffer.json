@@ -18,5 +18,6 @@
   ],
   "random_cycles_per_seed": 20000,
   "directed_cycles": 8543,
-  "serial_retirement": "The atomic head interface is defined and verified separately in config/serial_retirement.json. This historical gate keeps serial_offer_i=0."
+  "serial_retirement": "The atomic head interface is defined and verified separately in config/serial_retirement.json. This historical gate keeps serial_offer_i=0.",
+  "storage": "Per entry the ROB keeps only what hardware reads: the trap flag, 17 bits that are the predictor's opcode/rd/rs1 fields (or the 4-bit cause of a trap), and 32 bits of next pc (or trap value); pc_before comes from the allocation pc. Completion events must carry the allocated pc as pc_before and a trap cause below 16 (ROB2_EVENT_CONTRACT). TRACE=1 (all simulation) additionally stores the full event record and supplies every other field and the order counter from it; TRACE=0 is the physical build and outputs zero there. Hardware fields come from the same storage in both builds."
 }

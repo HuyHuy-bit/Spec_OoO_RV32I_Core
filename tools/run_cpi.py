@@ -125,7 +125,7 @@ def main():
         else: raise RuntimeError(f'counting mutation {mutation} was not detected')
         print(f'CPI counting mutation {mutation}: PASS (detected)', flush=True)
     inputs = {p: digest(ROOT/p) for p in sorted(config['sources'] + [f'config/{name}.json', 'tools/run_cpi.py',
-              'tools/run_sail_differential.py', 'verif/core/fetched_core_tb.cpp', 'verif/core/perf_programs.py',
+              'tools/run_sail_differential.py', 'verif/core/fetched_core_tb.cpp', 'verif/core/trace_lockstep.sv', 'verif/core/perf_programs.py',
               'verif/core/reference.py'])}
     (out/'receipt.json').write_text(json.dumps(dict(schema=1, status='pass', profile='cpi_measurement_task1',
         parameters=config['parameters'], latencies=LATENCIES, results=results, mutations=caught, inputs_sha256=inputs,

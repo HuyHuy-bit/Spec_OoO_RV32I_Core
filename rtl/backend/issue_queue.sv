@@ -31,9 +31,10 @@ module issue_queue (
   logic [5:0] destination_q [16];
   logic [63:0] payload_q [16];
   logic [1:0] awake [16];
-  logic [15:0] chosen [2];
+  logic [15:0] chosen [2], candidate [2], taken;
+  logic [15:0][4:0] age;
+  logic [4:0] pick [2];
   logic [3:0] free_slot [2];
-  logic [4:0] best_age [2];
   logic found_free;
   wire stop = rst_i || flush_i || recover_i;
 
@@ -70,29 +71,50 @@ module issue_queue (
     end
   end
 
+  // oldest live slot as {found, slot}: a 4-level tree; equal ages keep the lower slot.
+  function automatic logic [4:0] oldest(input logic [15:0] live, input logic [15:0][4:0] slot_age);
+    logic [15:0] node_live;
+    logic [15:0][3:0] node_slot;
+    logic [15:0][4:0] node_age;
+    logic right;
+    node_live = live;
+    node_age = slot_age;
+    for (int slot = 0; slot < 16; slot++) node_slot[slot] = 4'(slot);
+    for (int width = 8; width >= 1; width = width / 2)
+      for (int node = 0; node < width; node++) begin
+        right = node_live[2*node+1] && (!node_live[2*node] || node_age[2*node+1] < node_age[2*node]);
+        node_live[node] = node_live[2*node] || node_live[2*node+1];
+        node_slot[node] = right ? node_slot[2*node+1] : node_slot[2*node];
+        node_age[node] = right ? node_age[2*node+1] : node_age[2*node];
+      end
+    return {node_live[0], node_slot[0]};
+  endfunction
+
   // oldest-ready issue selection
   // port zero selects first; rob-relative age is independent of iq storage order.
+  // port_ready_i gates only the tree result, so late backpressure does not cross the age compare.
   always_comb begin
     issue_o = 0;
     issue_id_o = 0;
     read_address_o = 0;
     issue_destination_o = 0;
     issue_payload_o = 0;
+    for (int slot = 0; slot < 16; slot++) begin
+      age[slot] = 5'(id_q[slot][4:0] - head_slot_i);
+      for (int port_id = 0; port_id < 2; port_id++)
+        candidate[port_id][slot] = valid_q[slot] && (&awake[slot]) && eligible_q[slot][port_id];
+    end
+    taken = 0;
     for (int port_id = 0; port_id < 2; port_id++) begin
-      chosen[port_id] = 0;
-      best_age[port_id] = 0;
-      for (int slot = 0; slot < 16; slot++) begin
-        if (!stop && port_ready_i[port_id] && valid_q[slot] && (&awake[slot])
-            && eligible_q[slot][port_id] && (port_id == 0 || !chosen[0][slot])
-            && (!issue_o[port_id] || 5'(id_q[slot][4:0] - head_slot_i) < best_age[port_id])) begin
-          issue_o[port_id] = 1;
-          chosen[port_id] = 16'b1 << slot;
-          best_age[port_id] = 5'(id_q[slot][4:0] - head_slot_i);
-          issue_id_o[port_id*13 +: 13] = id_q[slot];
-          read_address_o[port_id*12 +: 12] = source_q[slot];
-          issue_destination_o[port_id*6 +: 6] = destination_q[slot];
-          issue_payload_o[port_id*64 +: 64] = payload_q[slot];
-        end
+      pick[port_id] = oldest(candidate[port_id] & ~taken, age);
+      issue_o[port_id] = !stop && port_ready_i[port_id] && pick[port_id][4];
+      chosen[port_id] = issue_o[port_id] ? 16'b1 << pick[port_id][3:0] : 16'd0;
+      taken = taken | chosen[port_id];
+      if (issue_o[port_id]) begin
+        issue_id_o[port_id*13 +: 13] = id_q[pick[port_id][3:0]];
+        read_address_o[port_id*12 +: 12] = source_q[pick[port_id][3:0]];
+        issue_destination_o[port_id*6 +: 6] = destination_q[pick[port_id][3:0]];
+        issue_payload_o[port_id*64 +: 64] = payload_q[pick[port_id][3:0]];
       end
     end
   end

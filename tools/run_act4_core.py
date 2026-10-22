@@ -83,7 +83,7 @@ def main():
         'config/memory_protocol.yaml', 'config/commit_event.yaml', 'config/toolchain.lock',
         'tools/run_act4_core.py', 'tools/act4_tools.py', 'tools/check_act4.py',
         'tools/gen_platform.py', dut['driver'], 'verif/arch/elf_image.py']
-    paths += [config['lint_config'], 'tools/run_sail_differential.py', 'verif/common/packed_bits.hpp']
+    paths += [config['lint_config'], 'tools/run_sail_differential.py', 'verif/core/trace_lockstep.sv', 'verif/common/packed_bits.hpp']
     paths += [str(p.relative_to(ROOT)) for p in sorted((ROOT/lock['harness']['directory']).iterdir()) if p.is_file()]
     inputs = {p: digest(ROOT/p) for p in paths}
     upstream = {name: digest(checkout/'tests'/name) for name in tests}

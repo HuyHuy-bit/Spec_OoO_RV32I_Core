@@ -138,7 +138,10 @@ module head_system_backend (
     .checkpoint_accept_o,
     .checkpoint_id_o,
     .checkpoint_valid_o,
-    .checkpoint_released_o
+    .checkpoint_released_o,
+    .lookup_slot_i(5'd0),
+    .lookup_checkpoint_o(),
+    .resolve_checkpoint_o()
   );
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) if (!rst_i) begin

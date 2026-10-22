@@ -1,7 +1,9 @@
 `default_nettype none
 // top-level two-wide core: fetch + predictor, execution_backend and identity recycling.
 module cpu_top #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SERVICE = 1, parameter bit MEMORY_SERVICE = 0,
-                              parameter bit EARLY_LOADS = 0) (
+                              parameter bit EARLY_LOADS = 0,
+                              // TRACE=0 is the physical build: no reference-only event state
+                              parameter bit TRACE = 1) (
   // inputs
   input  wire clk_i, rst_i, enable_i, flush_i, drained_i,
   input  wire [31:0] flush_pc_i,
@@ -135,7 +137,7 @@ module cpu_top #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SERVICE =
   );
 
   // execution backend
-  execution_backend #(.SYSTEM_SERVICE(TRAP_SERVICE), .MEMORY_SERVICE(MEMORY_SERVICE), .EARLY_LOADS(EARLY_LOADS)) backend (
+  execution_backend #(.SYSTEM_SERVICE(TRAP_SERVICE), .MEMORY_SERVICE(MEMORY_SERVICE), .EARLY_LOADS(EARLY_LOADS), .TRACE(TRACE)) backend (
     .memory_issue_allowed_i(memory_issue_allowed_i && running), .admit_valid_i, .admit_id_i,
     .admission_valid_o, .admission_id_o, .admission_address_o, .admission_data_o, .admission_mask_o, .admission_size_o,
     .memory_prepare_o, .memory_busy_o, .memory_committed_o, .memory_irrevocable_o, .memory_fatal_o,

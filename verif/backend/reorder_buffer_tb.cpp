@@ -66,7 +66,9 @@ public:
     Completion result(unsigned i, std::mt19937& rng, bool trap = false, bool solo = false) const {
         Completion c; c.id = queue.at(i).id; c.offer = c.take = true; c.solo = solo;
         for (auto& word : c.event) word = rng();
-        put(c.event, TRAP_OFFSET, 1, trap);
+        put(c.event, TRAP_OFFSET, 1, trap); put(c.event, PC_BEFORE_OFFSET, 32, queue.at(i).pc);
+        if (trap) put(c.event, TRAP_CAUSE_OFFSET, 32, rng() % 16);
+        if (!trap && !queue.at(i).cfi) put(c.event, PC_AFTER_OFFSET, 32, queue.at(i).pc + 4);
         return c;
     }
     template<class T> void event_equal(const T& actual, unsigned lane, Event expected, bool trapped) {

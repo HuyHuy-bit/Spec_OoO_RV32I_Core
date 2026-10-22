@@ -5,7 +5,7 @@ ACT4_SAIL ?= out/deps/sail-riscv-0.10/bin/sail_riscv_sim
 OSS_CAD_SUITE ?= $(HOME)/tools/oss-cad-suite-20260905/oss-cad-suite
 
 .PHONY: doctor platform-generate platform-check event-generate event-check memory-protocol-generate memory-protocol-check lockstep-check act4-check act4-upstream-check prf-check prf-mutation-check a1-probe-check a1-synth-check check-fast check nightly reference-check
-.PHONY: a1-timing-fetch a1-timing-check
+.PHONY: a1-timing-fetch a1-timing-check chip-timing-check chip-librelane
 .PHONY: a1-check
 .PHONY: act4-tools act4-fetched-check
 .PHONY: sail-log-check sail-fetched-differential-check spike-fetched-differential-check
@@ -200,6 +200,12 @@ a1-timing-fetch:
 
 a1-timing-check:
 	@python3 tools/run_a1_timing.py --suite "$(OSS_CAD_SUITE)"
+
+chip-timing-check:
+	@python3 tools/run_chip_timing.py --suite "$(OSS_CAD_SUITE)"
+
+chip-librelane:
+	@python3 tools/run_chip_librelane.py $(if $(TO),--to $(TO))
 
 a1-check:
 	@python3 -c 'from pathlib import Path; Path("out/a1/acceptance.json").unlink(missing_ok=True)'

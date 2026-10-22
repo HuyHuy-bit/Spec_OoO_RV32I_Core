@@ -89,6 +89,8 @@ public:
         Completion c; const auto& e = queue.at(index); c.id = e.id; c.offer = true;
         for (auto& word : c.event) word = rng();
         put(c.event, TRAP_OFFSET, 1, trap); put(c.event, PC_BEFORE_OFFSET, 32, e.pc);
+        if (trap) put(c.event, TRAP_CAUSE_OFFSET, 32, rng() % 16);
+        if (!trap && !e.cfi) put(c.event, PC_AFTER_OFFSET, 32, e.pc + 4);
         put(c.event, RD_ADDR_OFFSET, 5, trap ? 0 : e.rd);
         put(c.event, RD_WRITE_MASK_OFFSET, 32, !trap && e.rd ? UINT32_MAX : 0);
         return c;

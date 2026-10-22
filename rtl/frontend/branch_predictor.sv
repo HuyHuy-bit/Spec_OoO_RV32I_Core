@@ -22,7 +22,7 @@ module branch_predictor #(parameter int ENTRIES = 256) (
   logic [7:0] ghr_q, commit_ghr_q;
   logic [2:0] ras_ptr_q, commit_ptr_q;
   logic [7:0][31:0] ras_q;
-  logic [63:0][31:0] jalr_target_q;
+  logic [63:0][31:2] jalr_target_q;  // retired jalr targets are word aligned
   logic [63:0] jalr_valid_q;
 
   // call and return classification
@@ -58,7 +58,7 @@ module branch_predictor #(parameter int ENTRIES = 256) (
       automatic logic [31:0] branch = {{20{ins[31]}}, ins[7], ins[30:25], ins[11:8], 1'b0};
       automatic logic is_branch = ins[6:0] == 7'h63;
       automatic logic is_jalr = ins[6:0] == 7'h67;
-      target_o[lane*32 +: 32] = is_jalr ? (is_return(ins[6:0], ins[11:7], ins[19:15]) ? ras_q[p - 3'd1] : jalr_target_q[pc[7:2]])
+      target_o[lane*32 +: 32] = is_jalr ? (is_return(ins[6:0], ins[11:7], ins[19:15]) ? ras_q[p - 3'd1] : {jalr_target_q[pc[7:2]], 2'b00})
                                         : pc + (ins[6:0] == 7'h6f ? jal : branch);
       taken_o[lane] = (ins[6:0] == 7'h6f || (is_branch && counter_q[pc[IW+1:2] ^ IW'(g)][1])
           || (is_jalr && (is_return(ins[6:0], ins[11:7], ins[19:15]) || jalr_valid_q[pc[7:2]])))
@@ -153,7 +153,7 @@ module branch_predictor #(parameter int ENTRIES = 256) (
         // lane 1's count already includes lane 0's update when both train one entry.
         if (train_write[lane]) counter_q[train_index[lane]] <= train_count[lane];
         if (retire_jalr[lane] && !retire_return[lane]) begin
-          jalr_target_q[slot] <= retire_next_i[lane*32 +: 32];
+          jalr_target_q[slot] <= retire_next_i[lane*32+2 +: 30];
           jalr_valid_q[slot] <= 1;
         end
       end

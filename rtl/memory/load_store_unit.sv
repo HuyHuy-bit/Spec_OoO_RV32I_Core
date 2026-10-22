@@ -2,7 +2,7 @@
 // issue-port-one address generation and early cacheable, idempotent loads.
 // loads take fully covering older store bytes (queued or committed) and wait for unknown or partial overlaps.
 // stores, uncached loads and faults use the shared rob-head memory path.
-module load_store_unit (
+module load_store_unit #(parameter bit TRACE = 1) (
   // inputs
   input  wire clk_i, rst_i, flush_i,
   input  wire recover_i,
@@ -33,7 +33,7 @@ module load_store_unit (
   // outputs
   output wire allocate_ready_o,
   output wire head_memory_o,
-  output wire [31:0] head_instruction_o, head_pc_o,
+  output wire [31:0] head_instruction_o,
   output wire [11:0] head_sources_o,
   output wire complete_valid_o,
   output wire [12:0] complete_id_o,
@@ -57,7 +57,6 @@ module load_store_unit (
   wire [4:0] head = head_id_i[4:0];
   assign head_memory_o = head_valid_i && memory_q[head] && done_q[head] && head_path_q[head];
   assign head_instruction_o = instruction_q[head];
-  assign head_pc_o = pc_q[head];
   assign head_sources_o = sources_q[head];
 
   // address generation
@@ -92,7 +91,7 @@ module load_store_unit (
       end
     if (allocate_i[0]) begin
       instruction_q[allocate_id_i[4:0]] <= allocate_instruction_i;
-      pc_q[allocate_id_i[4:0]] <= allocate_pc_i;
+      if (TRACE) pc_q[allocate_id_i[4:0]] <= allocate_pc_i;
       sources_q[allocate_id_i[4:0]] <= allocate_sources_i;
     end
     // a killed slot cannot be reallocated on the descriptor-write cycle.
@@ -221,8 +220,8 @@ module load_store_unit (
       complete_event_o.valid = 1;
       complete_event_o.privilege = 3;
       complete_event_o.instruction = instruction;
-      complete_event_o.pc_before = pc_q[slot];
-      complete_event_o.pc_after = pc_q[slot];
+      complete_event_o.pc_before = TRACE ? pc_q[slot] : 32'd0;
+      complete_event_o.pc_after = TRACE ? pc_q[slot] : 32'd0;
       complete_event_o.rs1_addr = instruction[19:15];
       complete_event_o.rs1_value = base_q[slot];
       if (engine_valid && engine_fault) begin
@@ -231,7 +230,7 @@ module load_store_unit (
         complete_event_o.trap_value = address_q[slot];
       end else begin
         complete_event_o.retired = 1;
-        complete_event_o.pc_after = pc_q[slot] + 32'd4;
+        complete_event_o.pc_after = TRACE ? pc_q[slot] + 32'd4 : 32'd0;
         complete_event_o.mem_valid = 1;
         complete_event_o.mem_address = address_q[slot];
         complete_event_o.mem_read_mask = mask_q[slot];

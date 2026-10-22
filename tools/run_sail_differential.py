@@ -93,16 +93,18 @@ def fetched_coverage(events, output):
 
 
 def build_fetched(directory=ROOT/'out/sail_fetched_differential/obj_dir', replace=None, config_name='memory_core'):
-    """Build the fetched core with the program-mode driver; RTL mutants run without RTL assertions."""
+    """Build the fetched core with the program-mode driver; RTL mutants run without RTL assertions.
+    The top is trace_lockstep: the trace build drives the bench while the physical build (TRACE=0)
+    must match it every cycle."""
     config = json.loads((ROOT/f'config/{config_name}.json').read_text())
     make_header()
-    flags = ['--Wall','--assert','--top-module','cpu_top',
+    flags = ['--Wall','--assert','--top-module','trace_lockstep','--prefix','Vcpu_top',
              *(f'-G{k}={v}' for k,v in config['parameters'].items()), ROOT/config['lint_config'], ROOT/'verif/core/perf_counters.vlt']
     if replace and replace[0].startswith('rtl/'): flags += ['-DSYNTHESIS','-Wno-UNUSEDSIGNAL','-Wno-UNUSEDPARAM']
     sources = [str(replace[1]) if replace and p == replace[0] else p
-               for p in config['sources']+['verif/core/fetched_core_tb.cpp']]
+               for p in config['sources']+['verif/core/trace_lockstep.sv','verif/core/fetched_core_tb.cpp']]
     # The bench's activity counters select the profile's hierarchy from these.
-    defines = ' '.join(f'-DTB_{k}={v}' for k,v in config['parameters'].items())
+    defines = ' '.join(['-DTB_LOCKSTEP=1']+[f'-DTB_{k}={v}' for k,v in config['parameters'].items()])
     result = subprocess.run(['verilator','--cc','--exe','--build','--build-jobs','2',*map(str,flags),
         '--Mdir',str(directory),'-CFLAGS',f'-std=c++17 -Wall -Wextra -Werror -I{HEADER_OUT} -I{ROOT/"verif/core"} {defines}',
         *sources,'-o','fetched_core'],
@@ -252,7 +254,7 @@ def main():
         'sw/link/platform.ld','tests/test_sail_log.py']
     if on_spike: paths += ['config/spike_differential.json','model/iss/spike_log.py','tools/run_lockstep_smoke.py','config/references.lock']
     paths += ['config/fetched_differential.json',f'config/{args.config}.json','config/reorder_buffer.json',config['lint_config'],
-              'verif/core/fetched_core_tb.cpp','verif/common/packed_bits.hpp']
+              'verif/core/fetched_core_tb.cpp','verif/core/trace_lockstep.sv','verif/common/packed_bits.hpp']
     paths += [str(p.relative_to(ROOT)) for p in sorted((ROOT/lock['harness']['directory']).iterdir()) if p.is_file()]
     inputs = {p:digest(ROOT/p) for p in sorted(set(paths))}
     fingerprint = {'inputs':inputs,f'{args.reference}_sha256':digest(reference),'versions':versions}

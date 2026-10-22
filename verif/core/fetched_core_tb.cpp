@@ -36,7 +36,11 @@ constexpr unsigned SLOT_WORDS=(EVENT_BITS+31)/32;
 
 // Verification-only activity counters (docs: perf-counters), sampled before each perf edge.
 // They read Verilator internals; TB_<parameter> defines from the build select the profile's hierarchy.
+#ifdef TB_LOCKSTEP
+#define CORE(name) dut.rootp->trace_lockstep__DOT__full__DOT__##name
+#else
 #define CORE(name) dut.rootp->cpu_top__DOT__##name
+#endif
 #define BACKEND(name) CORE(backend__DOT__##name)
 #define ROB(name) BACKEND(backend__DOT__backend__DOT__rob__DOT__##name)
 #define MEMORY(name) BACKEND(systems__DOT__memory_service__DOT__##name)
