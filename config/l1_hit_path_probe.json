@@ -1,0 +1,1 @@
+{"schema": 1, "sources": ["rtl/memory/l1_cache_array.sv", "synth/experiments/l1_hit_path_probe.sv"]}

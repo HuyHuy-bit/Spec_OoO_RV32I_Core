@@ -8,7 +8,7 @@
     20260906
   ],
   "instruction_limit": 250000,
-  "completion": "Pass only when tohost reads 1 after its store reaches the target, retirement is then withheld, and every retired store and MMIO transaction drains and matches its retired event. Any other tohost value, fatal, watchdog, undrained tohost store or reaching the instruction limit fails.",
+  "completion": "Pass only when tohost reads 1 once its store is on the committed-store stream, retirement is then withheld, and every retired store and MMIO transaction drains and matches its retired event; cacheable stores match through the committed stream and a shadow memory that every external line write must agree with. Any other tohost value, fatal, watchdog, undrained tohost store or reaching the instruction limit fails.",
   "complete_directories": [
     "rv32i/I"
   ],

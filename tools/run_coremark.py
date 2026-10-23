@@ -28,7 +28,7 @@ OUT = ROOT/'out/coremark'
 FLAGS = ['-O2', '-march=rv32i', '-mabi=ilp32']
 ROB_N = 32
 PROFILES = ('early_load_core',)
-LATENCIES = (1, 10)
+LATENCIES = (1, 10, 50)
 
 
 def fetch():

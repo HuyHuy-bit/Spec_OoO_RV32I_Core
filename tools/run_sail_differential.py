@@ -92,7 +92,7 @@ def fetched_coverage(events, output):
     return dict(dual_retire_cycles=dual, fences=fences, fence_i=fence_i, mret=mret, identity_recycles=recycles)
 
 
-def build_fetched(directory=ROOT/'out/sail_fetched_differential/obj_dir', replace=None, config_name='memory_core'):
+def build_fetched(directory=ROOT/'out/sail_fetched_differential/obj_dir', replace=None, config_name='memory_core', bench_defines=()):
     """Build the fetched core with the program-mode driver; RTL mutants run without RTL assertions.
     The top is trace_lockstep: the trace build drives the bench while the physical build (TRACE=0)
     must match it every cycle."""
@@ -104,7 +104,7 @@ def build_fetched(directory=ROOT/'out/sail_fetched_differential/obj_dir', replac
     sources = [str(replace[1]) if replace and p == replace[0] else p
                for p in config['sources']+['verif/core/trace_lockstep.sv','verif/core/fetched_core_tb.cpp']]
     # The bench's activity counters select the profile's hierarchy from these.
-    defines = ' '.join(['-DTB_LOCKSTEP=1']+[f'-DTB_{k}={v}' for k,v in config['parameters'].items()])
+    defines = ' '.join(['-DTB_LOCKSTEP=1']+[f'-DTB_{k}={v}' for k,v in config['parameters'].items()]+[f'-D{d}' for d in bench_defines])
     result = subprocess.run(['verilator','--cc','--exe','--build','--build-jobs','2',*map(str,flags),
         '--Mdir',str(directory),'-CFLAGS',f'-std=c++17 -Wall -Wextra -Werror -I{HEADER_OUT} -I{ROOT/"verif/core"} {defines}',
         *sources,'-o','fetched_core'],

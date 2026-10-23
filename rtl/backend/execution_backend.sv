@@ -48,6 +48,9 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
   output wire [3:0] admission_mask_o,
   output wire [1:0] admission_size_o,
   output wire memory_prepare_o, memory_busy_o, memory_committed_o, memory_irrevocable_o, memory_fatal_o,
+  output wire committed_valid_o,
+  output wire [31:0] committed_address_o, committed_data_o,
+  output wire [3:0] committed_mask_o,
   output wire data_request_valid_o,
   output memory_protocol_pkg::mem_request_t data_request_o,
   output wire data_response_ready_o,
@@ -247,8 +250,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
       wire head_busy, head_fatal, head_request_valid, head_request_ready, head_response_valid, head_response_ready;
       memory_protocol_pkg::mem_request_t head_request;
       wire lsu_busy, lsu_fatal;
-      wire [31:0] committed_address, committed_data;
-      wire [3:0] committed_mask;
+      logic committed_busy_q;
 
       // rob-head memory service
       head_memory_controller memory_head_controller (
@@ -268,14 +270,23 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
         .fault_offer_o(memory_fault_offer), .fault_id_o(memory_fault_id), .fault_event_o(memory_fault_event),
         .fault_accept_i(memory_fault_offer && backend_complete_accept[0]),
         .trap_ready_o(memory_trap_ready), .trap_accept_i(trap_accept_o && memory_head),
-        .committed_o(memory_committed_o), .committed_address_o(committed_address), .committed_data_o(committed_data),
-        .committed_mask_o(committed_mask), .irrevocable_o(memory_irrevocable_o), .fatal_o(head_fatal),
+        .committed_o(memory_committed_o), .committed_address_o, .committed_data_o,
+        .committed_mask_o, .irrevocable_o(memory_irrevocable_o), .fatal_o(head_fatal),
         .fatal_sources_o(unused_fatal[11:8]), .fatal_reason_o(unused_fatal[7:0]),
         .request_valid_o(head_request_valid), .request_ready_i(head_request_ready), .request_o(head_request),
         .response_valid_i(head_response_valid), .response_ready_o(head_response_ready), .response_i(data_response_i)
       );
       assign memory_busy_o = head_busy || lsu_busy;
       assign memory_fatal_o = head_fatal || lsu_fatal;
+
+      // committed-store stream
+      // memory_committed_o stays high while the engine owns the store, so the stream pulses on its first cycle only.
+      always_ff @(posedge clk_i) begin
+        if (rst_i) committed_busy_q <= 0;
+        else committed_busy_q <= memory_committed_o;
+      end
+      assign committed_valid_o = memory_committed_o && !committed_busy_q;
+
       if (EARLY_LOADS) begin : early_loads
 
         // early-load scheduling and execution
@@ -292,8 +303,8 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
           .retire_i(retire_accept_o[0]),
           .head_memory_o(lsu_head_memory), .head_instruction_o(lsu_head_instruction),
           .head_sources_o(lsu_head_sources), .issue_allowed_i(memory_issue_allowed_i),
-          .committed_valid_i(memory_committed_o), .committed_address_i(committed_address),
-          .committed_data_i(committed_data), .committed_mask_i(committed_mask),
+          .committed_valid_i(memory_committed_o), .committed_address_i(committed_address_o),
+          .committed_data_i(committed_data_o), .committed_mask_i(committed_mask_o),
           .complete_valid_o(lsu_complete), .complete_id_o(lsu_complete_id), .complete_event_o(lsu_event),
           .complete_take_i(completion_accept_o[1] && lsu_complete), .busy_o(lsu_busy), .fatal_o(lsu_fatal),
           .head_request_valid_i(head_request_valid), .head_request_ready_o(head_request_ready),
@@ -304,7 +315,6 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
         );
       end else begin : head_only_memory
         assign {lsu_busy, lsu_fatal} = 0;
-        wire unused_committed = ^{committed_address, committed_data, committed_mask};
         assign {data_request_valid_o, head_request_ready, head_response_valid, data_response_ready_o}
           = {head_request_valid, data_request_ready_i, data_response_valid_i, head_response_ready};
         assign data_request_o = head_request;
@@ -364,6 +374,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
 
   if (!MEMORY_SERVICE) begin : no_memory
     assign {memory_prepare_o, memory_busy_o, memory_committed_o, memory_irrevocable_o, memory_fatal_o} = 0;
+    assign {committed_valid_o, committed_address_o, committed_data_o, committed_mask_o} = 0;
     assign {memory_read, memory_serial_offer, memory_fault_offer, memory_trap_ready} = 0;
     assign {memory_serial_id, memory_fault_id, admission_id_o} = 0;
     assign {memory_serial_event, memory_fault_event, data_request_o} = '0;

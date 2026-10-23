@@ -33,6 +33,9 @@ module trace_lockstep #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SE
   output wire [3:0] admission_mask_o,
   output wire [1:0] admission_size_o,
   output wire memory_prepare_o, memory_busy_o, memory_committed_o, memory_irrevocable_o, memory_fatal_o,
+  output wire committed_valid_o,
+  output wire [31:0] committed_address_o, committed_data_o,
+  output wire [3:0] committed_mask_o,
   output wire flush_ready_o,
   output wire [1:0] fetch_valid_o, dispatch_o, unsupported_o, producer_busy_o,
   output wire [63:0] fetch_pc_o, fetch_instruction_o,
@@ -67,6 +70,9 @@ module trace_lockstep #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SE
   wire [3:0] lean_admission_mask_o;
   wire [1:0] lean_admission_size_o;
   wire lean_memory_prepare_o, lean_memory_busy_o, lean_memory_committed_o, lean_memory_irrevocable_o, lean_memory_fatal_o;
+  wire lean_committed_valid_o;
+  wire [31:0] lean_committed_address_o, lean_committed_data_o;
+  wire [3:0] lean_committed_mask_o;
   wire lean_flush_ready_o;
   wire [1:0] lean_fetch_valid_o, lean_dispatch_o, lean_unsupported_o, lean_producer_busy_o;
   wire [63:0] lean_fetch_pc_o, lean_fetch_instruction_o;
@@ -101,6 +107,10 @@ module trace_lockstep #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SE
     .memory_committed_o(lean_memory_committed_o),
     .memory_irrevocable_o(lean_memory_irrevocable_o),
     .memory_fatal_o(lean_memory_fatal_o),
+    .committed_valid_o(lean_committed_valid_o),
+    .committed_address_o(lean_committed_address_o),
+    .committed_data_o(lean_committed_data_o),
+    .committed_mask_o(lean_committed_mask_o),
     .flush_ready_o(lean_flush_ready_o),
     .fetch_valid_o(lean_fetch_valid_o),
     .dispatch_o(lean_dispatch_o),
@@ -159,6 +169,10 @@ module trace_lockstep #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SE
       assert (lean_memory_committed_o == memory_committed_o) else $fatal(1, "LOCKSTEP memory_committed_o");
       assert (lean_memory_irrevocable_o == memory_irrevocable_o) else $fatal(1, "LOCKSTEP memory_irrevocable_o");
       assert (lean_memory_fatal_o == memory_fatal_o) else $fatal(1, "LOCKSTEP memory_fatal_o");
+      assert (lean_committed_valid_o == committed_valid_o) else $fatal(1, "LOCKSTEP committed_valid_o");
+      assert (!committed_valid_o || lean_committed_address_o == committed_address_o) else $fatal(1, "LOCKSTEP committed_address_o");
+      assert (!committed_valid_o || lean_committed_data_o == committed_data_o) else $fatal(1, "LOCKSTEP committed_data_o");
+      assert (!committed_valid_o || lean_committed_mask_o == committed_mask_o) else $fatal(1, "LOCKSTEP committed_mask_o");
       assert (lean_flush_ready_o == flush_ready_o) else $fatal(1, "LOCKSTEP flush_ready_o");
       assert (lean_fetch_valid_o == fetch_valid_o) else $fatal(1, "LOCKSTEP fetch_valid_o");
       assert (lean_dispatch_o == dispatch_o) else $fatal(1, "LOCKSTEP dispatch_o");

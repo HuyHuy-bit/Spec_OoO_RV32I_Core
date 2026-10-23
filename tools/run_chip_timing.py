@@ -13,10 +13,13 @@ from run_a1_probe import ROOT, digest, run, verify_synthesis_suite
 from run_a1_timing import analyze, sdc
 
 
-OUT = ROOT / "out/chip_timing"
-TOP = "chip_top"
 # chip_top pins cpu_top to the early-load profile parameters, so it shares that profile's sources.
-SOURCES = json.loads((ROOT / "config/early_load_core.json").read_text())["sources"] + ["rtl/core/chip_top.sv"]
+DEFAULT_TOP = "chip_top"
+DEFAULT_SOURCES = "early_load_core"
+# module-level defaults are imported by run_chip_librelane.py; main() overrides them for other tops.
+OUT = ROOT / "out/chip_timing"
+TOP = DEFAULT_TOP
+SOURCES = json.loads((ROOT / f"config/{DEFAULT_SOURCES}.json").read_text())["sources"] + ["rtl/core/chip_top.sv"]
 TIE = "sky130_fd_sc_hd__conb_1"
 REGISTER_PATHS = """read_liberty $liberty
 read_verilog $netlist
@@ -38,7 +41,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--suite", type=Path,
                         default=Path.home() / "tools/oss-cad-suite-20260905/oss-cad-suite")
+    parser.add_argument("--top", default=DEFAULT_TOP)
+    parser.add_argument("--sources-config", default=DEFAULT_SOURCES, help="config/NAME.json with a sources list")
     args = parser.parse_args()
+    global OUT, TOP, SOURCES
+    TOP = args.top
+    # chip_top keeps out/chip_timing so existing consumers still find its receipt.
+    OUT = ROOT / "out/chip_timing" / ("" if TOP == DEFAULT_TOP else TOP)
+    SOURCES = json.loads((ROOT / f"config/{args.sources_config}.json").read_text())["sources"]
+    if TOP == DEFAULT_TOP:
+        SOURCES = SOURCES + ["rtl/core/chip_top.sv"]
     OUT.mkdir(parents=True, exist_ok=True)
     receipt = OUT / "receipt.json"
     receipt.unlink(missing_ok=True)
@@ -96,7 +108,7 @@ def main() -> None:
         raise RuntimeError("missing register-to-register path")
     register = re.search(rf"(?m)^  \S+ {re.escape(end[1])} \(\n(?:    \..*\n)*?    \.Q\(([^()]+)\)", netlist)
     results = {"schema": 1, "inputs_sha256": {p: digest(ROOT / p) for p in SOURCES + [
-                   "config/early_load_core.json", "config/a1_timing.json", "config/a1_timing.lock",
+                   f"config/{args.sources_config}.json", "config/a1_timing.json", "config/a1_timing.lock",
                    "config/synthesis.lock", "synth/a1_timing.tcl", "tools/run_chip_timing.py",
                    "tools/run_a1_timing.py"]},
                "intent": config, "library": lock["library"], "opensta": lock["opensta"],

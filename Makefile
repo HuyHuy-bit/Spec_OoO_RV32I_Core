@@ -225,6 +225,11 @@ branch-predictor-check:
 	@verilator --lint-only -Wall rtl/frontend/branch_predictor.sv
 	@python3 -m unittest -v tests/test_branch_predictor_rtl.py
 
+.PHONY: tage-predictor-check
+tage-predictor-check:
+	@verilator --lint-only -Wall rtl/frontend/tage_predictor.sv
+	@python3 -m unittest -v tests/test_tage_predictor_rtl.py
+
 .PHONY: load-store-unit-check
 load-store-unit-check:
 	@python3 -m unittest -v tests/test_load_store_unit_rtl.py
@@ -266,12 +271,26 @@ reference-check:
 early-load-core-check:
 	@python3 tools/run_sail_differential.py --config early_load_core --sail "$(ACT4_SAIL)"
 
+.PHONY: fetched-core-store-check
+fetched-core-store-check:
+	@python3 -m unittest -v tests/test_fetched_core_store_check.py
+
 # Subsystem gates, ordered like the pipeline. check-all runs every one (hours); check stays the quick tier.
+.PHONY: l1-cache-array-check
+l1-cache-array-check:
+	@verilator --lint-only -Wall rtl/memory/l1_cache_array.sv
+	@python3 -m unittest -v tests/test_l1_cache_array_rtl.py
+
+.PHONY: cache-array-timing-check
+cache-array-timing-check:
+	@python3 tools/run_chip_timing.py --top l1_cache_array --sources-config l1_cache_array --suite "$(OSS_CAD_SUITE)"
+	@python3 tools/run_chip_timing.py --top l1_hit_path_probe --sources-config l1_hit_path_probe --suite "$(OSS_CAD_SUITE)"
+
 .PHONY: frontend-check backend-check execute-check memory-check system-check core-check check-all
-frontend-check: branch-predictor-check fetch-unit-check
+frontend-check: branch-predictor-check tage-predictor-check fetch-unit-check
 backend-check: rename-bundle-check rename-state-check rename-checkpoints-check rename-recovery-check rename-recovery-ownership-check reorder-buffer-check rename-rob-check serial-retirement-check issue-queue-check issue-backend-check prf-check prf-mutation-check
 execute-check: execution-backend-check
-memory-check: load-store-unit-check load-store-queue-check load-store-queue-random-check store-forward-check load-store-prepare-check load-transaction-check load-transaction-formal-check committed-store-check mmio-store-check data-port-check memory-path-check head-memory-check
+memory-check: l1-cache-array-check load-store-unit-check load-store-queue-check load-store-queue-random-check store-forward-check load-store-prepare-check load-transaction-check load-transaction-formal-check committed-store-check mmio-store-check data-port-check memory-path-check head-memory-check
 system-check: csr-unit-check head-system-backend-check head-dispatch-check
-core-check: cpu-top-check frontend-faults-check head-trap-core-check system-core-check memory-core-check act4-fetched-check sail-fetched-differential-check spike-fetched-differential-check early-load-core-check
+core-check: cpu-top-check frontend-faults-check head-trap-core-check system-core-check memory-core-check act4-fetched-check fetched-core-store-check sail-fetched-differential-check spike-fetched-differential-check early-load-core-check
 check-all: check frontend-check backend-check execute-check memory-check system-check core-check

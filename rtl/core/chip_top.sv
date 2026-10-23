@@ -34,6 +34,7 @@ module chip_top (
     .admission_valid_o(admission_valid), .admission_id_o(admission_id),
     .admission_address_o(), .admission_data_o(), .admission_mask_o(), .admission_size_o(),
     .memory_prepare_o(), .memory_busy_o(), .memory_committed_o(), .memory_irrevocable_o(), .memory_fatal_o(),
+    .committed_valid_o(), .committed_address_o(), .committed_data_o(), .committed_mask_o(),
     .flush_ready_o(), .fetch_valid_o(), .dispatch_o(), .unsupported_o(), .producer_busy_o(),
     .fetch_pc_o(), .fetch_instruction_o(), .fetch_busy_o(), .fetch_fault_o(), .fetch_fault_cause_o(),
     .retire_valid_o(), .retire_accept_o(), .retire_event_o(), .redirect_o(), .redirect_pc_o(),

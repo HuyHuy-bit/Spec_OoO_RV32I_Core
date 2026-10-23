@@ -1,5 +1,7 @@
 // Runs a raw program image on the fetched memory core and prints accepted architectural events.
-// With a tohost address (ACT4), the run ends at tohost == 1 after every write drains; the count is a limit.
+// With a tohost address (ACT4), the run ends once the committed stores make tohost == 1 and every write drains; the count is a limit.
+// Cacheable stores are checked on the core's committed-store stream: in retirement order, applied to a shadow memory
+// that every external line write must agree with.
 // Mode perf holds every external readiness high, answers after fixed latencies and ends at a terminal PC;
 // +read_latency=N +write_latency=N +terminal=PC [+warm=PC:n:PC:n]. The count is a limit.
 // Perf mode also prints COUNTER <all|region> <name> <value> lines (docs: perf-counters).
@@ -121,7 +123,7 @@ int main(int argc,char** argv) {
         const unsigned tohost=act4 ? std::stoul(argv[5],nullptr,0):0;
         require(!act4 || (!(tohost&7) && tohost<=65528),"invalid tohost address");
         // The infallible RAM target is the explicit admission guarantor for cached stores.
-        auto memory=image;
+        auto memory=image, shadow=image;
         std::array<uint8_t,48> mmio{};
         Vcpu_top dut;
         Transaction instruction, data;
@@ -130,7 +132,7 @@ int main(int argc,char** argv) {
         unsigned events=0, dual=0, recycles=0;
         bool draining=false;
         bool halted=false, tohost_retired=false;
-        // Ownership monitors: cached writes follow their retirement; MMIO traffic precedes it.
+        // Ownership monitors: cached writes follow their retirement on the committed stream; MMIO traffic precedes it.
         std::deque<Write> cached_writes, mmio_writes;
         std::deque<unsigned> mmio_reads;
         auto byte=[&](unsigned address) -> uint8_t& {
@@ -141,7 +143,7 @@ int main(int argc,char** argv) {
         };
         auto ready=[&] { return stall ? random()%4==0:random()%4!=0; };
         auto reset=[&] {
-            instruction={}; data={}; memory=image; mmio.fill(0);
+            instruction={}; data={}; memory=shadow=image; mmio.fill(0);
             cached_writes.clear(); mmio_writes.clear(); mmio_reads.clear();
             hold_i=hold_d=false; events=0; halted=tohost_retired=false;
             dut.rst_i=1; dut.response_valid_i=0; dut.data_response_valid_i=0;
@@ -179,12 +181,10 @@ int main(int argc,char** argv) {
             }
             if (!is_data) return;
             if (tx.write && !tx.uncached) {
-                require(!cached_writes.empty(),"cached store issued before retirement");
-                const Write w=cached_writes.front(); cached_writes.pop_front();
-                uint32_t lanes=0;
-                for (unsigned lane=0;lane<4;++lane) if ((w.mask>>lane)&1) lanes|=0xffu<<(8*lane);
-                require((w.address&~31u)==tx.address && tx.mask==w.mask<<(w.address&28)
-                        && ((tx.words[(w.address&31)/4]^w.data)&lanes)==0,"cached store request differs from its retirement");
+                require(tx.address+32<=shadow.size(),"request outside PMA");
+                for (unsigned lane=0;lane<32;++lane)
+                    require(!((tx.mask>>lane)&1) || uint8_t(tx.words[lane/4]>>(8*(lane%4)))==shadow[tx.address+lane],
+                            "external line write differs from committed memory");
             } else if (tx.write) mmio_writes.push_back({tx.address&~3u,tx.mask,tx.words[0]});
             else if (tx.uncached) mmio_reads.push_back(tx.address);
         };
@@ -193,10 +193,6 @@ int main(int argc,char** argv) {
                 const unsigned base=tx.uncached ? tx.address&~3u:tx.address;
                 for (unsigned lane=0;lane<(tx.uncached ? 4u:32u);++lane)
                     if ((tx.mask>>lane)&1) byte(base+lane)=uint8_t(tx.words[lane/4]>>(8*(lane%4)));
-                uint64_t status=0;
-                for (unsigned lane=0;act4 && lane<8;++lane) status|=uint64_t(memory[tohost+lane])<<(8*lane);
-                require(!status || status==1,"ACT4 FAIL tohost="+std::to_string(status));
-                halted|=status==1;
             }
             tx.pending=false;
         };
@@ -230,6 +226,33 @@ int main(int argc,char** argv) {
                 terminal_seen|=pc==terminal;
                 for (unsigned n=0;warm_window && n<2;++n) if (pc==warm[2*n] && ++warm_seen[n]==warm[2*n+1]) warm_at[n][0]=cycle+1;
             }
+        };
+        // A committed-stream pulse is one cacheable store made globally visible: it must be the next retired store.
+        auto in_retirement_order=[&](const Write& w) {
+            require(!cached_writes.empty(),"committed store before retirement");
+            const Write oldest=cached_writes.front(); cached_writes.pop_front();
+            uint32_t lanes=0;
+            for (unsigned lane=0;lane<4;++lane) if ((oldest.mask>>lane)&1) lanes|=0xffu<<(8*lane);
+            require(w.address==(oldest.address&~3u) && w.mask==oldest.mask && ((w.data^oldest.data)&lanes)==0,
+                    "committed store differs from its retirement");
+        };
+#if TB_SWAP_COMMITTED
+        // Negative-test hook: the order check sees the first two committed stores exchanged.
+        unsigned swap_stage=0;
+        Write swap_held{};
+#endif
+        auto committed=[&](const Write& w) {
+            require(w.address+4<=shadow.size(),"request outside PMA");
+            for (unsigned lane=0;lane<4;++lane) if ((w.mask>>lane)&1) shadow[w.address+lane]=uint8_t(w.data>>(8*lane));
+            uint64_t status=0;
+            for (unsigned lane=0;act4 && lane<8;++lane) status|=uint64_t(shadow[tohost+lane])<<(8*lane);
+            require(!status || status==1,"ACT4 FAIL tohost="+std::to_string(status));
+            halted|=status==1;
+#if TB_SWAP_COMMITTED
+            if (swap_stage==0) { swap_held=w; swap_stage=1; return; }
+            if (swap_stage==1) { swap_stage=2; in_retirement_order(w); in_retirement_order(swap_held); return; }
+#endif
+            in_retirement_order(w);
         };
         auto hold=[&](const auto& bus,auto& snapshot,bool& held,bool valid,bool accepted) {
             if (held) {
@@ -284,6 +307,8 @@ int main(int argc,char** argv) {
             const unsigned accepted=(dut.retire_accept_o&1)+(dut.retire_accept_o>>1);
             for (unsigned lane=0;lane<2;++lane) if ((dut.retire_accept_o>>lane)&1) observe(dut.retire_event_o,lane*EVENT_BITS,lane);
             if (dut.trap_accept_o) observe(dut.trap_event_o,0,0);
+            // Before the data request is accepted below: the pulse and the line write can share a cycle.
+            if (dut.committed_valid_o) committed({dut.committed_address_o,dut.committed_mask_o,dut.committed_data_o});
             if (perf && !terminal_cycle) {
                 sample(dut,memory,counters[0]);
                 // The region holds edges warm_at[0][0] .. warm_at[1][0]-1, the same edges as warm_cycles.
@@ -307,8 +332,8 @@ int main(int argc,char** argv) {
             // A falling drain request marks an on-chip identity recycle.
             if (draining && !dut.identity_drain_o) ++recycles;
             draining=dut.identity_drain_o;
-            // ACT4's halt-loop store may hold memory_busy after all retired writes drain.
-            if (done && (act4 || !dut.memory_busy_o) && !data.pending && cached_writes.empty() && mmio_writes.empty() && mmio_reads.empty()) {
+            // ACT4's halt-loop store may hold memory_busy after all committed writes drain.
+            if (done && (act4 ? !dut.memory_committed_o : !dut.memory_busy_o) && !data.pending && cached_writes.empty() && mmio_writes.empty() && mmio_reads.empty()) {
                 if (++settled<4) continue;
                 require(mode.rfind("reset_",0)!=0 || reset_done,"reset scenario did not fire");
                 if (perf) {
