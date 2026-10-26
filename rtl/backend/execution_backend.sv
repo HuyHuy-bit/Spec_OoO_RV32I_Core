@@ -1,13 +1,13 @@
 `default_nettype none
 // execution backend: decode, issue queue, alu/branch producers, head system/memory service and early loads.
-module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMORY_SERVICE = 0,
-  parameter bit EARLY_LOADS = 0, parameter bit TRACE = 1) (
+module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMORY_SERVICE = 0, parameter bit DCACHE = 0,
+  parameter bit EARLY_LOADS = 0, parameter bit TRACE = 1, parameter int CHECKPOINT_BITS = 12) (
   // inputs
   input  wire clk_i, rst_i, flush_i, drained_i,
   input  wire [1:0] valid_i,
   input  wire [63:0] instruction_i, pc_i, predicted_pc_i,
   input  wire [1:0] predicted_taken_i,
-  input  wire [23:0] predicted_checkpoint_i,
+  input  wire [2*CHECKPOINT_BITS-1:0] predicted_checkpoint_i,
   input  wire [1:0] frontend_fault_i,
   input  wire [63:0] frontend_cause_i, frontend_value_i,
   input  wire [1:0] execution_ready_i, completion_enable_i, retire_ready_i,
@@ -23,7 +23,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
   // outputs
   output wire [1:0] supported_o, allocate_accept_o,
   output wire [25:0] allocate_id_o,
-  output wire [11:0] redirect_checkpoint_o,
+  output wire [CHECKPOINT_BITS-1:0] redirect_checkpoint_o,
   output wire resolve_valid_o, resolve_accept_o, resolve_taken_o, resolve_mispredict_o,
   output wire [12:0] resolve_id_o,
   output wire [31:0] resolve_pc_o,
@@ -40,6 +40,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
   output commit_event_pkg::commit_event_t fault_event_o,
   output wire system_prepare_o, system_busy_o, system_redirect_o,
   output wire [31:0] system_redirect_pc_o,
+  output wire icache_invalidate_o, fetch_hold_o,     // fence.i: invalidate after its clean; hold fetch requests until then
   output wire system_trap_valid_o,
   output commit_event_pkg::commit_event_t system_trap_event_o,
   output wire admission_valid_o,
@@ -93,7 +94,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
   wire [2:0] allocate_checkpoint, issue_checkpoint, resolve_checkpoint;
   logic [31:0] prediction_pc_q [8];
   logic [7:0] prediction_taken_q;
-  logic [11:0] prediction_checkpoint_q [8];
+  logic [CHECKPOINT_BITS-1:0] prediction_checkpoint_q [8];
   assign redirect_checkpoint_o = prediction_checkpoint_q[resolve_checkpoint];
   wire [127:0] payload;
   wire [63:0] executable_instruction;
@@ -154,7 +155,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
       if (allocate_accept_o[lane] && cfi[lane]) begin
         prediction_pc_q[allocate_checkpoint] <= predicted_pc_i[lane*32 +: 32];
         prediction_taken_q[allocate_checkpoint] <= predicted_taken_i[lane];
-        prediction_checkpoint_q[allocate_checkpoint] <= predicted_checkpoint_i[lane*12 +: 12];
+        prediction_checkpoint_q[allocate_checkpoint] <= predicted_checkpoint_i[lane*CHECKPOINT_BITS +: CHECKPOINT_BITS];
       end
     end
   end
@@ -203,6 +204,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
 
   if (SYSTEM_SERVICE) begin : systems
     wire descriptor_busy, killed, owner_valid, owner_memory, system_offer, system_trap_valid;
+    wire clean_request, clean_done;
     wire [12:0] system_serial_id;
     commit_event_pkg::commit_event_t system_serial_event, system_trap_event;
     wire [12:0] system_id;
@@ -233,7 +235,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
     );
 
     // system instructions and trap service
-    head_system_controller head (
+    head_system_controller #(.CLEAN(DCACHE)) head (
       .clk_i, .rst_i, .cancel_i(flush_i || cancel_system_i), .retire_accept_i(retire_accept_o),
       .head_valid_i(head_valid), .head_id_i(head_id_o), .head_pc_i(head_pc),
       .system_valid_i(owner_valid && !owner_memory), .system_id_i(system_id), .instruction_i(system_instruction),
@@ -243,17 +245,20 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
       .serial_offer_o(system_offer), .serial_id_o(system_serial_id), .serial_event_o(system_serial_event), .serial_accept_i(serial_accept && system_offer),
       .illegal_offer_o(illegal_offer), .illegal_id_o(illegal_id), .illegal_event_o(illegal_event), .illegal_accept_i(illegal_accept),
       .trap_valid_o(system_trap_valid), .trap_event_o(system_trap_event), .trap_accept_i(trap_accept_o),
-      .redirect_o(system_redirect_o), .redirect_pc_o(system_redirect_pc_o)
+      .redirect_o(system_redirect_o), .redirect_pc_o(system_redirect_pc_o),
+      .clean_done_i(clean_done), .clean_o(clean_request), .invalidate_o(icache_invalidate_o), .fence_i_o(fetch_hold_o)
     );
     if (MEMORY_SERVICE) begin : memory_service
       wire [11:0] unused_fatal;
       wire head_busy, head_fatal, head_request_valid, head_request_ready, head_response_valid, head_response_ready;
       memory_protocol_pkg::mem_request_t head_request;
-      wire lsu_busy, lsu_fatal;
+      wire lsu_busy, lsu_fatal, lsu_write_done, store_buffer_full, store_buffer_pending, head_committed;
+      wire [31:0] head_committed_address, head_committed_data, lsu_write_address, lsu_write_data;
+      wire [3:0] head_committed_mask, lsu_write_mask;
       logic committed_busy_q;
 
       // rob-head memory service
-      head_memory_controller memory_head_controller (
+      head_memory_controller #(.DCACHE(DCACHE)) memory_head_controller (
         .clk_i, .rst_i, .recovery_i(flush_i || redirect_o || trap_accept_o), .cancel_i(flush_i),
         .memory_valid_i((EARLY_LOADS ? lsu_head_memory : owner_valid && owner_memory) && !cancel_system_i),
         .memory_id_i(EARLY_LOADS ? head_id_o : system_id),
@@ -270,8 +275,10 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
         .fault_offer_o(memory_fault_offer), .fault_id_o(memory_fault_id), .fault_event_o(memory_fault_event),
         .fault_accept_i(memory_fault_offer && backend_complete_accept[0]),
         .trap_ready_o(memory_trap_ready), .trap_accept_i(trap_accept_o && memory_head),
-        .committed_o(memory_committed_o), .committed_address_o, .committed_data_o,
-        .committed_mask_o, .irrevocable_o(memory_irrevocable_o), .fatal_o(head_fatal),
+        .store_buffer_full_i(store_buffer_full), .store_buffer_pending_i(store_buffer_pending),
+        .committed_o(head_committed), .committed_address_o(head_committed_address),
+        .committed_data_o(head_committed_data), .committed_mask_o(head_committed_mask),
+        .irrevocable_o(memory_irrevocable_o), .fatal_o(head_fatal),
         .fatal_sources_o(unused_fatal[11:8]), .fatal_reason_o(unused_fatal[7:0]),
         .request_valid_o(head_request_valid), .request_ready_i(head_request_ready), .request_o(head_request),
         .response_valid_i(head_response_valid), .response_ready_o(head_response_ready), .response_i(data_response_i)
@@ -281,16 +288,22 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
 
       // committed-store stream
       // memory_committed_o stays high while the engine owns the store, so the stream pulses on its first cycle only.
+      // With the cache it is the store buffer's head as it lands, in retirement order: a writeback it caused leaves
+      // before, without its bytes.
       always_ff @(posedge clk_i) begin
         if (rst_i) committed_busy_q <= 0;
         else committed_busy_q <= memory_committed_o;
       end
-      assign committed_valid_o = memory_committed_o && !committed_busy_q;
+      assign memory_committed_o = DCACHE ? store_buffer_pending : head_committed;
+      assign committed_valid_o = DCACHE ? lsu_write_done : memory_committed_o && !committed_busy_q;
+      assign committed_address_o = DCACHE ? lsu_write_address : head_committed_address;
+      assign committed_data_o = DCACHE ? lsu_write_data : head_committed_data;
+      assign committed_mask_o = DCACHE ? lsu_write_mask : head_committed_mask;
 
       if (EARLY_LOADS) begin : early_loads
 
         // early-load scheduling and execution
-        load_store_unit #(.TRACE(TRACE)) lsu (
+        load_store_unit #(.TRACE(TRACE), .DCACHE(DCACHE)) lsu (
           .clk_i, .rst_i, .flush_i(producer_flush), .recover_i(redirect_o), .recover_slot_i(resolve_id_o[4:0]),
           .head_valid_i(head_valid), .head_id_i(head_id_o),
           .allocate_valid_i(admitted), .allocate_memory_i(memory_op),
@@ -300,11 +313,14 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
           .allocate_sources_i({rename_source2, rename_source[5:0]}),
           .issue_i(lsu_issue), .issue_id_i(issue_id_o[25:13]), .issue_instruction_i(issue_payload[95:64]),
           .issue_pc_i(issue_payload[127:96]), .source1_i(read_data[95:64]), .source2_i(read_data[127:96]),
-          .retire_i(retire_accept_o[0]),
+          .retire_i(retire_accept_o[0]), .clean_i(clean_request), .clean_done_o(clean_done),
+          .store_buffer_full_o(store_buffer_full), .store_buffer_pending_o(store_buffer_pending),
+          .write_done_o(lsu_write_done), .write_address_o(lsu_write_address), .write_data_o(lsu_write_data),
+          .write_mask_o(lsu_write_mask),
           .head_memory_o(lsu_head_memory), .head_instruction_o(lsu_head_instruction),
           .head_sources_o(lsu_head_sources), .issue_allowed_i(memory_issue_allowed_i),
-          .committed_valid_i(memory_committed_o), .committed_address_i(committed_address_o),
-          .committed_data_i(committed_data_o), .committed_mask_i(committed_mask_o),
+          .committed_valid_i(head_committed), .committed_address_i(head_committed_address),
+          .committed_data_i(head_committed_data), .committed_mask_i(head_committed_mask),
           .complete_valid_o(lsu_complete), .complete_id_o(lsu_complete_id), .complete_event_o(lsu_event),
           .complete_take_i(completion_accept_o[1] && lsu_complete), .busy_o(lsu_busy), .fatal_o(lsu_fatal),
           .head_request_valid_i(head_request_valid), .head_request_ready_o(head_request_ready),
@@ -314,14 +330,17 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
           .response_valid_i(data_response_valid_i), .response_ready_o(data_response_ready_o), .response_i(data_response_i)
         );
       end else begin : head_only_memory
-        assign {lsu_busy, lsu_fatal} = 0;
+        assign {lsu_busy, lsu_fatal, lsu_write_done, store_buffer_full, store_buffer_pending, clean_done} = 0;
+        assign {lsu_write_address, lsu_write_data, lsu_write_mask} = 0;
+        wire unused_clean = clean_request;
         assign {data_request_valid_o, head_request_ready, head_response_valid, data_response_ready_o}
           = {head_request_valid, data_request_ready_i, data_response_valid_i, head_response_ready};
         assign data_request_o = head_request;
       end
     end
     if (!MEMORY_SERVICE) begin : unused_memory_owner
-      wire unused_owner = ^owner_pc ^ read_ready[1] ^ ^lsu_head_instruction;
+      assign clean_done = 0;
+      wire unused_owner = ^owner_pc ^ read_ready[1] ^ ^lsu_head_instruction ^ clean_request;
     end
     if (!(MEMORY_SERVICE && EARLY_LOADS)) begin : no_lsu_head
       assign {lsu_head_instruction, lsu_head_sources} = 0;
@@ -357,6 +376,7 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
     assign system_busy_o = 0;
     assign system_redirect_o = 0;
     assign system_redirect_pc_o = 0;
+    assign {icache_invalidate_o, fetch_hold_o} = 0;
     assign system_trap_valid_o = 0;
     assign system_trap_event_o = '0;
     wire unused_system = cancel_system_i ^ head_valid ^ ^head_pc ^ ^rename_source ^ ^rename_source2 ^ ^read_ready
@@ -387,6 +407,9 @@ module execution_backend #(parameter bit SYSTEM_SERVICE = 0, parameter bit MEMOR
   // configuration checks
   if (MEMORY_SERVICE && !SYSTEM_SERVICE) begin : invalid_memory_configuration
     initial $error("MEMORY_SERVICE_REQUIRES_SYSTEM_SERVICE");
+  end
+  if (DCACHE && !EARLY_LOADS) begin : invalid_cache_configuration
+    initial $error("DCACHE_REQUIRES_EARLY_LOADS");
   end
   if (EARLY_LOADS && !MEMORY_SERVICE) begin : invalid_early_load_configuration
     initial $error("EARLY_LOADS_REQUIRES_MEMORY_SERVICE");

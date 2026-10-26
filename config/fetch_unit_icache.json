@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "profile": "two_wide_fetch_with_l1_icache",
+  "sources": [
+    "rtl/generated/platform_pkg.sv",
+    "rtl/generated/memory_protocol_pkg.sv",
+    "rtl/core/core_pkg.sv",
+    "rtl/frontend/tage_predictor.sv",
+    "rtl/frontend/branch_predictor.sv",
+    "rtl/memory/l1_cache_array.sv",
+    "rtl/frontend/l1_icache.sv",
+    "rtl/frontend/fetch_unit.sv"
+  ],
+  "lint_config": "config/fetch_unit_icache.vlt",
+  "line_bytes": 32,
+  "outstanding": 1,
+  "lanes": 2,
+  "seeds": [
+    1,
+    42,
+    20260920
+  ],
+  "random_cycles_per_seed": 20000,
+  "scope": "fetch_unit as cpu_top instantiates it with ICACHE=1 (PREDICT, AHEAD, TAGE), standalone on the instruction port (L1 cache plan Task 8). Fetch reads rtl/frontend/l1_icache.sv once per line into its line buffer; a redirect looks its target up the next cycle (REDIRECT_CYCLE=1, ruling Q7); an idle line checks the next line with a cache prefetch, whose hit fills the ahead buffer. The bench is the memory target: it scores every delivered lane against an image that changes at each invalidate, as a cleaned store would, and checks the port protocol, busy and fence.i's hold. Directed runs time a redirect to a resident line, a resident straight-line run across eight lines (no gap, one cache read per line) and redirects racing a prefetch.",
+  "fence_i": "hold_i (registered) keeps a new request from being offered; a request already offered stays offered. invalidate_i clears the cache; the read in flight at that edge installs and answers nothing. The redirect that follows, in the same cycle or later, reads the changed image.",
+  "lint": "Only unused constants in generated packages are waived; no width, latch or combinational-loop warning is waived. Assertion-disabled mutation builds permit constants/signals made unused by the injected fault."
+}

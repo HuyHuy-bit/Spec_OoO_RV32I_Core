@@ -1,6 +1,8 @@
 `default_nettype none
 // rob-head system owner: csr/mret/wfi/fence/fence.i and trap entry through csr_unit.
-module head_system_controller (
+// CLEAN=1: a fence.i first waits for order (empty store buffer), then cleans l1_dcache before it is prepared.
+// Its clean's end invalidates l1_icache, so the fetch of pc+4 after its redirect reads the cleaned memory.
+module head_system_controller #(parameter bit CLEAN = 0) (
   // inputs
   input  wire clk_i, rst_i, cancel_i,
   input  wire [1:0] retire_accept_i,
@@ -15,6 +17,7 @@ module head_system_controller (
   input  wire serial_accept_i,
   input  wire illegal_accept_i,
   input  wire trap_accept_i,
+  input  wire clean_done_i,
 
   // outputs
   output wire prepare_o, busy_o,
@@ -27,7 +30,10 @@ module head_system_controller (
   output wire trap_valid_o,
   output commit_event_pkg::commit_event_t trap_event_o,
   output wire redirect_o,
-  output wire [31:0] redirect_pc_o
+  output wire [31:0] redirect_pc_o,
+  output wire clean_o,                     // one-cycle l1_dcache clean request
+  output wire invalidate_o,                // one-cycle l1_icache invalidate after that clean
+  output wire fence_i_o                    // fence.i at the head before its invalidate: no new fetch request
 );
   import core_pkg::*;
   import commit_event_pkg::*;
@@ -39,8 +45,14 @@ module head_system_controller (
   wire [31:0] value, next_pc;
   wire [64:0] unused_state;
   commit_csr_effect_t [3:0] effects;
-  wire system_request = system_valid_i && source_ready_i && head_valid_i && system_id_i == head_id_i
-      && (!(decoded.op inside {OP_FENCE, OP_FENCE_I}) || order_ready_i);
+  typedef enum logic [1:0] {CLEAN_IDLE, CLEAN_PULSE, CLEAN_WAIT, CLEAN_DONE} clean_e;
+  clean_e clean_q;
+  logic invalidate_q;
+  wire system_head = system_valid_i && head_valid_i && system_id_i == head_id_i;
+  wire fence_i_head = system_head && decoded.op == OP_FENCE_I;
+  wire cleaned = !CLEAN || decoded.op != OP_FENCE_I || clean_q == CLEAN_DONE;
+  wire system_request = system_head && source_ready_i
+      && (!(decoded.op inside {OP_FENCE, OP_FENCE_I}) || order_ready_i) && cleaned;
   wire request = fault_valid_i || system_request;
   wire prepare = request && request_ready;
   wire owner_live = head_valid_i && head_id_i == id_q && head_pc_i == saved_q.pc_before;
@@ -58,6 +70,23 @@ module head_system_controller (
   assign illegal_id_o = id_q;
   assign redirect_o = accepted_trap || (accepted_serial && redirect_q);
   assign redirect_pc_o = redirect_o ? next_pc : 32'd0;
+
+  // fence.i data-cache clean
+  // order_ready_i covers the store buffer and a running clean, so the pulse never meets a held write or a clean;
+  // a cancelled wait leaves the cache busy until its clean ends.
+  assign clean_o = clean_q == CLEAN_PULSE;
+  assign invalidate_o = invalidate_q;
+  assign fence_i_o = CLEAN && fence_i_head && clean_q != CLEAN_DONE;
+  always_ff @(posedge clk_i) begin
+    if (rst_i || cancel_i || !CLEAN) clean_q <= CLEAN_IDLE;
+    else case (clean_q)
+      CLEAN_IDLE: if (fence_i_head && order_ready_i) clean_q <= CLEAN_PULSE;
+      CLEAN_PULSE: clean_q <= CLEAN_WAIT;
+      CLEAN_WAIT: if (clean_done_i) clean_q <= CLEAN_DONE;
+      default: if (!fence_i_head) clean_q <= CLEAN_IDLE;
+    endcase
+    invalidate_q <= CLEAN && !rst_i && !cancel_i && clean_q == CLEAN_WAIT && clean_done_i;
+  end
 
   // head-event preparation
   always_comb begin

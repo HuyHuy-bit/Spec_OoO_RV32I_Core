@@ -1,0 +1,172 @@
+{
+  "schema": 1,
+  "profile": "load_store_queue_sb4_reduced",
+  "top": "load_store_queue_properties",
+  "dut": "load_store_queue",
+  "reduced": {
+    "LQ_N": 2,
+    "SQ_N": 2,
+    "ROB_W": 2,
+    "ID_W": 4,
+    "SB_N": 4
+  },
+  "sources": [
+    "rtl/memory/store_forward.sv",
+    "rtl/memory/load_store_queue.sv",
+    "verif/formal/memory/load_store_queue_properties.sv"
+  ],
+  "mode": "bmc",
+  "engine": "smtbmc bitwuzla",
+  "cover_engine": "smtbmc yices",
+  "depth": 11,
+  "timeout_seconds": 1200,
+  "assumptions": [
+    "Initial sampled edge asserts reset.",
+    "Caller contract: allocation is a lane prefix within LSQ readiness and four-slot ROB space; kinds are exclusive; retirement is a lane prefix in ROB order and a store retires only with address and data; flush and recovery exclude each other and exclude allocation and retirement; recovery keeps a live slot; load take only with offer.",
+    "Address updates carry a legal aligned size, as load_store_prepare guarantees. Identities, values, masks, early flags, the four retired-store entries and memory word are otherwise unconstrained, including stale identities."
+  ],
+  "environment": [
+    "Independent reference ROB window (four slots, two generation bits) records kind, identity, and resolved address/data per slot from the same input events.",
+    "Load offer, identity, masks, forwarded bytes and extended result are computed by an oldest-first, youngest-older-store search in ROB order, then the retired-store entries youngest (highest index) first. DUT ranks, pointers and selector outputs are never used by the reference."
+  ],
+  "required_covers": [
+    "dual_allocate",
+    "dual_retire",
+    "queue_full",
+    "store_forward",
+    "committed_forward",
+    "unknown_stall",
+    "data_stall",
+    "woken_load",
+    "joint_resolution",
+    "recover_store",
+    "stale_update",
+    "wrapped_issue"
+  ],
+  "mutations": [
+    {
+      "name": "rank_ignores_head",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "return 6'(ROB_W'(slot - head_slot_i)) + 6'(SB_N);",
+      "new": "return 6'(slot) + 6'(SB_N);",
+      "assertions": [
+        "offer_exact",
+        "forward_exact",
+        "result_exact"
+      ]
+    },
+    {
+      "name": "recovery_boundary",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "assign sq_killed[s] = ROB_W'(sq_id_q[s][ROB_W-1:0] - head_slot_i) > recover_age;",
+      "new": "assign sq_killed[s] = ROB_W'(sq_id_q[s][ROB_W-1:0] - head_slot_i) >= recover_age;",
+      "assertions": [
+        "ready_exact",
+        "offer_exact",
+        "forward_exact",
+        "result_exact"
+      ]
+    },
+    {
+      "name": "lane_one_space",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "int'(lq_count_q) + int'(allocate_load_i[0]) + int'(allocate_load_i[1]) <= LQ_N",
+      "new": "int'(lq_count_q) + int'(allocate_load_i[1]) <= LQ_N",
+      "assertions": [
+        "ready_exact"
+      ]
+    },
+    {
+      "name": "lane_one_retire",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "sq_count_q > (SW+1)'(sq_pop0) && sq_id_q[sq_next] == retire_id_i[1]",
+      "new": "sq_count_q > (SW+1)'(sq_pop0) && sq_id_q[sq_head_q] == retire_id_i[1]",
+      "assertions": [
+        "ready_exact",
+        "offer_exact",
+        "forward_exact",
+        "result_exact"
+      ]
+    },
+    {
+      "name": "stale_identity",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "if (address_i && sq_live[s] && sq_id_q[s] == address_id_i) begin",
+      "new": "if (address_i && sq_live[s] && sq_id_q[s][ROB_W-1:0] == address_id_i[ROB_W-1:0]) begin",
+      "assertions": [
+        "offer_exact",
+        "forward_exact",
+        "result_exact"
+      ]
+    },
+    {
+      "name": "issued_flag",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "if (load_take_i && load_valid_o) lq_issued_q[pick] <= 1;",
+      "new": "if (1'b0) lq_issued_q[pick] <= 1;",
+      "assertions": [
+        "offer_exact",
+        "identity_exact"
+      ]
+    },
+    {
+      "name": "data_wait",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "candidate_data_ready[SB_N+s] = {4{sq_data_ready_q[s]}};",
+      "new": "candidate_data_ready[SB_N+s] = 4'hf;",
+      "assertions": [
+        "offer_exact"
+      ]
+    },
+    {
+      "name": "committed_rank",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "candidate_age[k] = 6'(k);",
+      "new": "candidate_age[k] = 6'd63;",
+      "assertions": [
+        "forward_exact",
+        "result_exact"
+      ]
+    },
+    {
+      "name": "oldest_pick",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "for (int k = LQ_N-1; k >= 0; k--) begin",
+      "new": "for (int k = 0; k < LQ_N; k++) begin",
+      "assertions": [
+        "offer_exact",
+        "identity_exact",
+        "forward_exact",
+        "result_exact"
+      ]
+    },
+    {
+      "name": "sb_ages_reversed",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "candidate_age[k] = 6'(k);",
+      "new": "candidate_age[k] = 6'(SB_N-1-k);",
+      "assertions": [
+        "forward_exact",
+        "result_exact"
+      ]
+    },
+    {
+      "name": "sb_younger_dropped",
+      "source": "rtl/memory/load_store_queue.sv",
+      "old": "candidate_valid[k] = committed_valid_i[k];",
+      "new": "candidate_valid[k] = committed_valid_i[k] && k == 0;",
+      "assertions": [
+        "forward_exact",
+        "result_exact"
+      ]
+    }
+  ],
+  "extra_inputs": [
+    "config/toolchain.lock",
+    "Makefile"
+  ],
+  "claim": "Depth-11 bounded queue-control check at LQ_N = SQ_N = 2, four-slot ROB and SB_N = 4 retired-store entries (the cached core's store-buffer depth), against an independent ROB-order reference: as load_store_queue_reduced, plus forwarding from four unconstrained retired-store entries where the youngest covering entry wins each byte. Full-size lint at SB_N = 4 only. Not unbounded, not full-size, no store-buffer drain timing, memory request/response, violation recovery or core integration.",
+  "parameters": {
+    "SB_N": 4
+  }
+}

@@ -94,7 +94,7 @@
     {
       "name": "data_readiness",
       "source": "rtl/memory/store_forward.sv",
-      "old": "if (found && !ready_byte) stall_o = 1;",
+      "old": "if (found[b] && !ready_byte[b]) stall_o = 1;",
       "new": "if (1'b0) stall_o = 1;",
       "assertions": [
         "stall_exact"

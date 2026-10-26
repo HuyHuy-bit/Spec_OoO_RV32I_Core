@@ -1,29 +1,52 @@
 `default_nettype none
-// gshare direction, an eight-entry return stack and tagless jalr targets.
+// selectable tage/gshare direction, an eight-entry return stack and tagless jalr targets.
 // checkpoints hold post-instruction history and stack pointer; tables train at retirement.
 // recovery restores the stack pointer, not overwritten stack entries.
-module branch_predictor #(parameter int ENTRIES = 256) (
+module branch_predictor #(parameter int ENTRIES = 256, parameter bit TAGE = 0,
+                          parameter int HISTORY_BITS = TAGE ? 32 : 8,
+                          parameter int CHECKPOINT_BITS = HISTORY_BITS + 4) (
   // inputs
   input  wire clk_i, rst_i,
   input  wire [63:0] pc_i, instruction_i,
   input  wire [1:0] take_i,
   input  wire redirect_i, repair_i,
-  input  wire [11:0] repair_checkpoint_i,
+  input  wire [CHECKPOINT_BITS-1:0] repair_checkpoint_i,
   input  wire [1:0] retire_i,
   input  wire [63:0] retire_instruction_i, retire_pc_i, retire_next_i,
 
   // outputs
   output logic [1:0] taken_o,
   output logic [63:0] target_o,
-  output logic [23:0] checkpoint_o
+  output logic [2*CHECKPOINT_BITS-1:0] checkpoint_o
 );
   localparam int IW = $clog2(ENTRIES);
   logic [ENTRIES-1:0][1:0] counter_q;
-  logic [7:0] ghr_q, commit_ghr_q;
+  logic [HISTORY_BITS-1:0] ghr_q, commit_ghr_q;
   logic [2:0] ras_ptr_q, commit_ptr_q;
   logic [7:0][31:0] ras_q;
   logic [63:0][31:2] jalr_target_q;  // retired jalr targets are word aligned
   logic [63:0] jalr_valid_q;
+
+  wire [1:0] tage_taken;
+  if (TAGE) begin : tage_direction
+    wire [1:0] branch, path, update, outcome;
+    for (genvar lane = 0; lane < 2; lane++) begin : ports
+      wire [31:0] ins = instruction_i[lane*32 +: 32];
+      wire [31:0] offset = {{20{ins[31]}}, ins[7], ins[30:25], ins[11:8], 1'b0};
+      wire unused = ^ins[24:12];
+      assign branch[lane] = ins[6:0] == 7'h63;
+      assign path[lane] = offset != 32'd4 && offset[1:0] == 0;
+      assign update[lane] = retire_i[lane] && retire_instruction_i[lane*32 +: 7] == 7'h63;
+      assign outcome[lane] = retire_next_i[lane*32 +: 32] != retire_pc_i[lane*32 +: 32] + 32'd4;
+    end
+    tage_predictor #(.LOOKUPS(2), .UPDATES(2), .EXTERNAL_HISTORY(1)) direction (
+      .clk_i, .rst_i, .lookup_valid_i(2'b11), .lookup_pc_i(pc_i), .lookup_history_i(ghr_q),
+      .lookup_branch_i(branch), .lookup_path_i(path), .lookup_taken_o(tage_taken),
+      .update_valid_i(update), .update_taken_i(outcome), .update_pc_i(retire_pc_i)
+    );
+  end else begin : gshare_direction
+    assign tage_taken = 0;
+  end
 
   // call and return classification
   function automatic logic link(input logic [4:0] r);
@@ -38,13 +61,13 @@ module branch_predictor #(parameter int ENTRIES = 256) (
 
   // fetch prediction and speculative history
   // lane 1 sees lane 0's speculative effect; at most one stack operation per cycle (lane 0 first).
-  logic [7:0] ghr_next;
+  logic [HISTORY_BITS-1:0] ghr_next;
   logic [2:0] ptr_next;
   logic push;
   logic [2:0] push_slot;
   logic [31:0] push_value;
   always_comb begin
-    automatic logic [7:0] g = ghr_q;
+    automatic logic [HISTORY_BITS-1:0] g = ghr_q;
     automatic logic [2:0] p = ras_ptr_q;
     automatic logic stack_used = 0;
     push = 0;
@@ -60,12 +83,12 @@ module branch_predictor #(parameter int ENTRIES = 256) (
       automatic logic is_jalr = ins[6:0] == 7'h67;
       target_o[lane*32 +: 32] = is_jalr ? (is_return(ins[6:0], ins[11:7], ins[19:15]) ? ras_q[p - 3'd1] : {jalr_target_q[pc[7:2]], 2'b00})
                                         : pc + (ins[6:0] == 7'h6f ? jal : branch);
-      taken_o[lane] = (ins[6:0] == 7'h6f || (is_branch && counter_q[pc[IW+1:2] ^ IW'(g)][1])
+      taken_o[lane] = (ins[6:0] == 7'h6f || (is_branch && (TAGE ? tage_taken[lane] : counter_q[pc[IW+1:2] ^ IW'(g)][1]))
           || (is_jalr && (is_return(ins[6:0], ins[11:7], ins[19:15]) || jalr_valid_q[pc[7:2]])))
         && target_o[lane*32 +: 2] == 2'b00;
       // history records whether control left the fall-through path, matching retirement: a branch
       // to pc+4 counts as not taken whatever its condition.
-      if (is_branch) g = {g[6:0], taken_o[lane] && target_o[lane*32 +: 32] != pc + 32'd4};
+      if (is_branch) g = {g[HISTORY_BITS-2:0], taken_o[lane] && target_o[lane*32 +: 32] != pc + 32'd4};
       if (!stack_used && is_return(ins[6:0], ins[11:7], ins[19:15])) begin
         p = p - 3'd1;
         stack_used = 1;
@@ -78,7 +101,7 @@ module branch_predictor #(parameter int ENTRIES = 256) (
         p = p + 3'd1;
         stack_used = 1;
       end
-      checkpoint_o[lane*12 +: 12] = {is_branch, p, g};
+      checkpoint_o[lane*CHECKPOINT_BITS +: CHECKPOINT_BITS] = {is_branch && branch != 32'd4, p, g};
       if (take_i[lane]) begin
         ghr_next = g;
         ptr_next = p;
@@ -87,7 +110,7 @@ module branch_predictor #(parameter int ENTRIES = 256) (
   end
 
   // retirement training
-  logic [7:0] commit_ghr;
+  logic [HISTORY_BITS-1:0] commit_ghr;
   logic [2:0] commit_ptr;
   logic [1:0] retire_branch, retire_jalr, retire_call, retire_return, train_write;
   logic [1:0][IW-1:0] train_index;
@@ -114,7 +137,7 @@ module branch_predictor #(parameter int ENTRIES = 256) (
       train_count[lane] = count;
       if (retire_i[lane]) begin
         if (retire_branch[lane])
-          commit_ghr = {commit_ghr[6:0], retire_next_i[lane*32 +: 32] != retire_pc_i[lane*32 +: 32] + 32'd4};
+          commit_ghr = {commit_ghr[HISTORY_BITS-2:0], retire_next_i[lane*32 +: 32] != retire_pc_i[lane*32 +: 32] + 32'd4};
         if (retire_return[lane]) commit_ptr = commit_ptr - 3'd1;
         else if (retire_call[lane]) commit_ptr = commit_ptr + 3'd1;
       end
@@ -138,8 +161,8 @@ module branch_predictor #(parameter int ENTRIES = 256) (
       commit_ghr_q <= commit_ghr;
       commit_ptr_q <= commit_ptr;
       if (repair_i) begin
-        ghr_q <= repair_checkpoint_i[7:0] ^ {7'd0, repair_checkpoint_i[11]};
-        ras_ptr_q <= repair_checkpoint_i[10:8];
+        ghr_q <= repair_checkpoint_i[HISTORY_BITS-1:0] ^ HISTORY_BITS'(repair_checkpoint_i[CHECKPOINT_BITS-1]);
+        ras_ptr_q <= repair_checkpoint_i[HISTORY_BITS +: 3];
       end else if (redirect_i) begin
         ghr_q <= commit_ghr;
         ras_ptr_q <= commit_ptr;
@@ -151,7 +174,7 @@ module branch_predictor #(parameter int ENTRIES = 256) (
       for (int lane = 0; lane < 2; lane++) if (retire_i[lane]) begin
         automatic logic [5:0] slot = retire_pc_i[lane*32+2 +: 6];
         // lane 1's count already includes lane 0's update when both train one entry.
-        if (train_write[lane]) counter_q[train_index[lane]] <= train_count[lane];
+        if (!TAGE && train_write[lane]) counter_q[train_index[lane]] <= train_count[lane];
         if (retire_jalr[lane] && !retire_return[lane]) begin
           jalr_target_q[slot] <= retire_next_i[lane*32+2 +: 30];
           jalr_valid_q[slot] <= 1;
@@ -162,7 +185,8 @@ module branch_predictor #(parameter int ENTRIES = 256) (
 
   // checks
 `ifndef SYNTHESIS
-  initial assert (ENTRIES >= 256 && ENTRIES == 2**IW) else $fatal(1, "PREDICTOR_GEOMETRY");
+  initial assert (HISTORY_BITS == (TAGE ? 32 : 8) && CHECKPOINT_BITS == HISTORY_BITS + 4
+                  && ENTRIES >= 256 && ENTRIES == 2**IW) else $fatal(1, "PREDICTOR_GEOMETRY");
 `endif
 endmodule
 `default_nettype wire

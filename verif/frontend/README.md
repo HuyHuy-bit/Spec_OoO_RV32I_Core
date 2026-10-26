@@ -15,8 +15,8 @@ The iteration count comes from `seed4_volatile` in that binary. The branch strea
 contains every committed conditional branch, in architectural order. Each model
 predicts with its old state, trains immediately, then shifts the actual outcome.
 Outcome means `pc_after != pc_before + 4`, matching current RTL retirement history.
-The receipt counts branches with a +4 immediate explicitly; the known RTL
-direction-versus-flow recovery edge case is not simulated here.
+The receipt counts branches with a +4 immediate explicitly. CPU checkpoints
+normalize these branches to a zero history bit, including on direction repair.
 
 All models start cold and train on the entire program. The region starts after
 the `(2 * warmup + 1)`th `core_bench_list` entry and ends at the first `stop_time`
@@ -89,3 +89,53 @@ The design basis is [Seznec and Michaud's TAGE paper](https://jilp.org/vol8/v8pa
 The [gem5 TAGE implementation](https://gem5.googlesource.com/public/gem5/+/a40950a5c97d484b30922fa60091e04e9efd2a99/src/cpu/pred/tage_base.cc)
 is a reference for alternate selection, allocation suppression and usefulness aging;
 its hashing, allocation, and update policies are not reproduced here.
+
+
+## CPU integration
+
+`cpu_top` defaults to `TAGE=1`; `TAGE=0` selects the retained gshare baseline.
+Both use the existing eight-entry return stack and 64-entry tagless JALR target
+table. TAGE changes conditional direction prediction, not target discovery or
+fetch-buffer/cache organization. Include `tage_predictor.sv` before
+`branch_predictor.sv` in the source list, as the core profiles do.
+
+TAGE reads with a 32-bit speculative history. Lane one sees the normalized
+conditional prediction of lane zero. Only accepted dispatch advances speculative
+history; backpressure and wrong-path offers do not train the tables. The backend
+accepts at most one control-flow instruction per cycle. Predictions may change
+while an offered instruction stalls; its checkpoint is captured on acceptance.
+
+Each TAGE checkpoint is 36 bits: `{repair_flip, ras_pointer[2:0], history[31:0]}`.
+History and pointer are post-instruction values. `repair_flip` is set for a
+conditional branch whose encoded target differs from PC+4. An accepted direction
+repair restores that history and flips its newest bit. Branches to PC+4 retain a
+zero bit even when condition prediction was wrong; JAL/JALR repair never flips
+history. Full redirects restore committed history and pointer, including any
+same-cycle accepted retirement. The eight backend checkpoint slots retain the
+full width until resolution. The existing RAS limitation remains: recovery
+restores its pointer, not overwritten stack entries.
+
+Training uses **retirement re-lookup**: each accepted retired conditional branch
+recomputes its provider and alternate from the current tables and committed
+pre-branch history. It does not retain fetch-time provider metadata in the ROB.
+Allocation therefore uses the retirement-time re-prediction, not the original
+fetch prediction or redirect pulse. Two retiring branches train in program order;
+the second sees the first's table, chooser, history and aging changes, including
+same-entry collisions. Non-conditional and invalid lanes do not train or age.
+This is a deliberate TAGE variant with delayed, correct-path training, not a
+claim to implement a published speculative TAGE update protocol.
+
+`tage_predictor` defaults to one lookup/update with internally committed lookup
+history for the original model replay. CPU configuration uses two lookup/update
+ports and external speculative history. Table contents and the training policy
+remain shared. `make tage-predictor-check` checks both modes: original model
+replays, external-history/dual-update state comparisons, and checkpoint recovery.
+The integration tests cover 36,000 cycles across three seeds with shortened aging,
+checking every base and tagged entry against the Python model after each cycle.
+
+The dual ordered updates and two lookups are combinational. No clock-frequency,
+area or physical closure result is implied by functional verification. Pipeline
+staging or serialized training may be needed for a 20 ns implementation. Changing
+training latency requires new CPU measurements. Cache integration must preserve
+accepted-dispatch qualification, checkpoint width and redirect priority; changing
+cache latency does not authorize advancing history on an unaccepted lookup.

@@ -76,6 +76,7 @@ load-transaction-formal-check:
 .PHONY: store-forward-check
 store-forward-check:
 	@python3 tools/run_memory_formal.py --profile store_forward --suite "$(OSS_CAD_SUITE)"
+	@python3 tools/run_memory_formal.py --profile store_forward_sb4 --suite "$(OSS_CAD_SUITE)"
 
 .PHONY: cpi-check
 cpi-check:
@@ -88,6 +89,7 @@ coremark-check:
 .PHONY: load-store-queue-check
 load-store-queue-check:
 	@python3 tools/run_memory_formal.py --profile load_store_queue --suite "$(OSS_CAD_SUITE)"
+	@python3 tools/run_memory_formal.py --profile load_store_queue_sb4 --suite "$(OSS_CAD_SUITE)"
 
 .PHONY: load-store-prepare-check
 load-store-prepare-check:
@@ -126,6 +128,7 @@ cpu-top-check:
 
 fetch-unit-check:
 	@python3 tools/run_unit.py fetch_unit --suite "$(OSS_CAD_SUITE)"
+	@python3 tools/run_unit.py fetch_unit_icache --suite "$(OSS_CAD_SUITE)"
 
 execution-backend-check:
 	@python3 tools/run_unit.py execution_backend --suite "$(OSS_CAD_SUITE)"
@@ -205,7 +208,7 @@ chip-timing-check:
 	@python3 tools/run_chip_timing.py --suite "$(OSS_CAD_SUITE)"
 
 chip-librelane:
-	@python3 tools/run_chip_librelane.py $(if $(TO),--to $(TO))
+	@python3 tools/run_chip_librelane.py $(if $(TO),--to $(TO)) $(if $(PERIOD),--period $(PERIOD))
 
 a1-check:
 	@python3 -c 'from pathlib import Path; Path("out/a1/acceptance.json").unlink(missing_ok=True)'
@@ -225,10 +228,15 @@ branch-predictor-check:
 	@verilator --lint-only -Wall rtl/frontend/branch_predictor.sv
 	@python3 -m unittest -v tests/test_branch_predictor_rtl.py
 
+.PHONY: l1-icache-check
+l1-icache-check:
+	@verilator --lint-only -Wall --top-module l1_icache config/fetch_unit.vlt rtl/generated/memory_protocol_pkg.sv rtl/memory/l1_cache_array.sv rtl/frontend/l1_icache.sv
+	@python3 -m unittest -v tests/test_l1_icache_rtl.py
+
 .PHONY: tage-predictor-check
 tage-predictor-check:
 	@verilator --lint-only -Wall rtl/frontend/tage_predictor.sv
-	@python3 -m unittest -v tests/test_tage_predictor_rtl.py
+	@python3 -m unittest -v tests/test_tage_predictor_rtl.py tests/test_tage_integration_rtl.py
 
 .PHONY: load-store-unit-check
 load-store-unit-check:
@@ -281,16 +289,26 @@ l1-cache-array-check:
 	@verilator --lint-only -Wall rtl/memory/l1_cache_array.sv
 	@python3 -m unittest -v tests/test_l1_cache_array_rtl.py
 
+.PHONY: l1-dcache-check
+l1-dcache-check:
+	@verilator --lint-only -Wall --top-module l1_dcache config/fetch_unit.vlt rtl/generated/memory_protocol_pkg.sv rtl/memory/l1_cache_array.sv rtl/memory/l1_dcache.sv
+	@python3 -m unittest -v tests/test_l1_dcache_rtl.py
+
+.PHONY: store-buffer-check
+store-buffer-check:
+	@verilator --lint-only -Wall rtl/memory/store_buffer.sv
+	@python3 -m unittest -v tests/test_store_buffer_rtl.py
+
 .PHONY: cache-array-timing-check
 cache-array-timing-check:
 	@python3 tools/run_chip_timing.py --top l1_cache_array --sources-config l1_cache_array --suite "$(OSS_CAD_SUITE)"
 	@python3 tools/run_chip_timing.py --top l1_hit_path_probe --sources-config l1_hit_path_probe --suite "$(OSS_CAD_SUITE)"
 
 .PHONY: frontend-check backend-check execute-check memory-check system-check core-check check-all
-frontend-check: branch-predictor-check tage-predictor-check fetch-unit-check
+frontend-check: branch-predictor-check tage-predictor-check l1-icache-check fetch-unit-check
 backend-check: rename-bundle-check rename-state-check rename-checkpoints-check rename-recovery-check rename-recovery-ownership-check reorder-buffer-check rename-rob-check serial-retirement-check issue-queue-check issue-backend-check prf-check prf-mutation-check
 execute-check: execution-backend-check
-memory-check: l1-cache-array-check load-store-unit-check load-store-queue-check load-store-queue-random-check store-forward-check load-store-prepare-check load-transaction-check load-transaction-formal-check committed-store-check mmio-store-check data-port-check memory-path-check head-memory-check
+memory-check: l1-cache-array-check l1-dcache-check store-buffer-check load-store-unit-check load-store-queue-check load-store-queue-random-check store-forward-check load-store-prepare-check load-transaction-check load-transaction-formal-check committed-store-check mmio-store-check data-port-check memory-path-check head-memory-check
 system-check: csr-unit-check head-system-backend-check head-dispatch-check
 core-check: cpu-top-check frontend-faults-check head-trap-core-check system-core-check memory-core-check act4-fetched-check fetched-core-store-check sail-fetched-differential-check spike-fetched-differential-check early-load-core-check
 check-all: check frontend-check backend-check execute-check memory-check system-check core-check

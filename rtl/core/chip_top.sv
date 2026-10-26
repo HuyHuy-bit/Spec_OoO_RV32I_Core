@@ -22,7 +22,7 @@ module chip_top (
   wire admission_valid;
   wire [12:0] admission_id;
 
-  cpu_top #(.FRONTEND_FAULTS(1), .TRAP_SERVICE(1), .MEMORY_SERVICE(1), .EARLY_LOADS(1), .TRACE(0)) core (
+  cpu_top #(.FRONTEND_FAULTS(1), .TRAP_SERVICE(1), .MEMORY_SERVICE(1), .EARLY_LOADS(1), .DCACHE(1), .ICACHE(1), .TRACE(0)) core (
     .clk_i, .rst_i, .enable_i(1'b1), .flush_i(1'b0), .drained_i(1'b0), .flush_pc_i(32'd0),
     .request_ready_i, .response_valid_i, .response_i,
     .data_request_ready_i, .data_response_valid_i, .data_response_i,

@@ -1,6 +1,6 @@
 `default_nettype none
 // rob-head memory owner: prepares a load/store, runs it on memory_transaction_path and retires or traps it.
-module head_memory_controller (
+module head_memory_controller #(parameter bit DCACHE = 0) (
   // inputs
   input  wire clk_i, rst_i, recovery_i, cancel_i,
   input  wire memory_valid_i,
@@ -17,6 +17,7 @@ module head_memory_controller (
   input  wire serial_accept_i,
   input  wire fault_accept_i,
   input  wire trap_accept_i,
+  input  wire store_buffer_full_i, store_buffer_pending_i,   // DCACHE; see memory_transaction_path
   input  wire request_ready_i,
   input  wire response_valid_i,
   input  memory_protocol_pkg::mem_response_t response_i,
@@ -156,7 +157,7 @@ module head_memory_controller (
   );
 
   // memory transactions and store admission
-  memory_transaction_path transactions (
+  memory_transaction_path #(.DCACHE(DCACHE)) transactions (
     .clk_i, .rst_i, .recovery_i, .kill_i(cancel),
     .desc_valid_i(owner_live && prepared && !launched_q), .desc_take_o(desc_take),
     .id_i(id), .address_i(address), .write_data_i(write_data), .byte_mask_i(mask), .size_i(size),
@@ -165,6 +166,7 @@ module head_memory_controller (
     .head_valid_i(owner_live), .issue_allowed_i(issue_allowed_i && owner_live),
     .admit_valid_i, .head_id_i, .admit_id_i, .commit_ready_o(commit_ready),
     .commit_i(accepted_serial && cached_store), .commit_accept_o(commit_accept),
+    .store_buffer_full_i, .store_buffer_pending_i,
     .valid_o(result_valid), .take_i(result_take), .id_o(result_id), .address_o(result_address),
     .data_o(result_data), .write_data_o(result_write_data), .cause_o(result_cause),
     .trap_value_o(result_trap_value), .byte_mask_o(result_mask), .size_o(unused[1:0]),

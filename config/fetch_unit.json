@@ -5,6 +5,7 @@
     "rtl/generated/platform_pkg.sv",
     "rtl/generated/memory_protocol_pkg.sv",
     "rtl/core/core_pkg.sv",
+    "rtl/frontend/tage_predictor.sv",
     "rtl/frontend/branch_predictor.sv",
     "rtl/frontend/fetch_unit.sv"
   ],

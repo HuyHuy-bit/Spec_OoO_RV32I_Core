@@ -50,8 +50,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkout', type=Path, default=CHECKOUT)
     parser.add_argument('--sail', type=Path, default=SAIL)
+    parser.add_argument('--config', default='memory_core', choices=('memory_core','early_load_core','cached_core'),
+                        help='fetched-core profile under config/')
     args = parser.parse_args()
-    dut = DUT
+    dut = DUT if args.config == 'memory_core' else {**DUT, 'name': f'fetched_{args.config}',
+        'core': f'config/{args.config}.json', 'out': f'out/act4_fetched_{args.config}'}
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     checkout, sail = args.checkout.resolve(), args.sail.resolve()
     lock, suite = check_harness()
@@ -119,7 +122,7 @@ def main():
     expected = {str(Path(t).with_suffix('.elf')) for t in tests}
     actual = {str(p.relative_to(elfdir)) for p in elfdir.rglob('*.elf')}
     if actual != expected: raise RuntimeError(f'ACT4 output selection mismatch: missing={expected-actual}, extra={actual-expected}')
-    binary = build_fetched(out/'obj_dir')[0]
+    binary = build_fetched(out/'obj_dir', config_name=args.config)[0]
     modes = dut['modes']
     def driver(image, seed, limit, tohost, mode=modes[0]):
         return [binary, image, seed, limit, mode, tohost]

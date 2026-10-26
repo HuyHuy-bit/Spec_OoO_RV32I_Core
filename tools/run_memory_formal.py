@@ -21,21 +21,26 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--suite', type=Path, default=Path.home()/'tools/oss-cad-suite-20260905/oss-cad-suite')
-    parser.add_argument('--profile', choices=['load_transaction_handshake', 'store_forward', 'load_store_queue'], required=True)
+    parser.add_argument('--profile', choices=['load_transaction_handshake', 'store_forward', 'load_store_queue',
+                                              'store_forward_sb4', 'load_store_queue_sb4'], required=True)
     args = parser.parse_args()
     suite = args.suite.resolve()
     config_path = f'config/{args.profile}.json'
     config = json.loads((ROOT/config_path).read_text())
     load = args.profile == 'load_transaction_handshake'
-    selector = args.profile == 'store_forward'
-    queue = args.profile == 'load_store_queue'
+    selector = args.profile.startswith('store_forward')
+    queue = args.profile.startswith('load_store_queue')
+    # one harness per DUT; a profile's parameters set the same-named parameter on the DUT and the harness.
+    parameters = config.get('parameters', {})
+    flags = ''.join(f'-G {name}={value} ' for name, value in parameters.items())
     lint = selector or queue
     title = 'Store forwarding' if selector else 'Load/store queue' if queue else 'Load handshake'
     if queue:
-        require(config['reduced'] == dict(LQ_N=2, SQ_N=2, ROB_W=2, ID_W=4) and config['depth'] == 11
-                and config['top'] == 'load_store_queue_properties', 'unsupported queue geometry')
+        require(set(parameters) <= {'SB_N'} and config['reduced'] == dict(LQ_N=2, SQ_N=2, ROB_W=2, ID_W=4, **parameters)
+                and config['depth'] == 11 and config['top'] == 'load_store_queue_properties', 'unsupported queue geometry')
     elif selector:
-        require(config['candidates'] == 9 and config['depth'] == 1 and config['top'] == 'store_forward_properties', 'unsupported selector geometry')
+        require(set(parameters) <= {'CANDIDATES'} and config['candidates'] == parameters.get('CANDIDATES', 9)
+                and config['depth'] == 1 and config['top'] == 'store_forward_properties', 'unsupported selector geometry')
     else:
         require(config['depth'] == 20 and config['top'] == args.profile, 'unsupported handshake bound or top')
     require(config['mode'] == 'bmc' and config['engine'] == ('smtbmc bitwuzla' if lint else 'smtbmc yices' if load else 'abc bmc3')
@@ -82,10 +87,11 @@ def main():
     checks, cells = [], {}
     if lint:
         rtl = [str(ROOT/p) for p in config['sources'][:-1]]
-        steps = [('lint', [verilator, '--lint-only', '--Wall', '--top-module', config['dut'], *rtl])]
+        steps = [('lint', [verilator, '--lint-only', '--Wall', '--top-module', config['dut'],
+                           *(f'-G{name}={value}' for name, value in parameters.items()), *rtl])]
         if selector:
             script = out/'synth.ys'
-            script.write_text(f'plugin -i slang\nread_slang --top {config["dut"]} {" ".join(rtl)}\n'
+            script.write_text(f'plugin -i slang\nread_slang --top {config["dut"]} {flags}{" ".join(rtl)}\n'
                               f'synth -top {config["dut"]}\ncheck -assert\nwrite_json {out/"synth.json"}\n')
             steps.append(('synth', [str(suite/'bin/yosys'), '-s', str(script)]))
         for name, command in steps:
@@ -124,7 +130,7 @@ def main():
             sources[index] = changed
         task = directory/'check.sby'
         engine = config['cover_engine'] if variant['mode'] == 'cover' else config['engine']
-        parameter = f'-G CHECK={variant["check"]} ' if 'check' in variant else ''
+        parameter = (f'-G CHECK={variant["check"]} ' if 'check' in variant else '') + flags
         task.write_text(f'[options]\nmode {variant["mode"]}\ndepth {config["depth"]}\n\n'
                         f'[engines]\n{engine}\n\n[script]\nplugin -i slang\n'
                         f'read_slang --no-synthesis-define --top {config["top"]} {parameter}'+ ' '.join(p.name for p in sources)+'\n'

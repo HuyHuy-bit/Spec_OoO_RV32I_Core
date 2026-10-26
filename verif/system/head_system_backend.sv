@@ -50,6 +50,8 @@ module head_system_backend (
 
   import commit_event_pkg::*;
   wire serial_ready, raw_trap_valid, raw_trap_accept;
+  wire [2:0] unused_lookup_checkpoint, unused_resolve_checkpoint;
+  wire unused_clean, unused_invalidate, unused_fence_i;
   wire [12:0] serial_id, illegal_id;
   wire [1:0] complete_accept;
   commit_event_t raw_trap_event;
@@ -71,7 +73,8 @@ module head_system_backend (
     .fault_valid_i(raw_trap_valid), .fault_event_i(raw_trap_event),
     .serial_offer_o, .serial_id_o(serial_id), .serial_event_o, .serial_accept_i(serial_accept_o),
     .illegal_offer_o, .illegal_id_o(illegal_id), .illegal_event_o, .illegal_accept_i(illegal_accept_o),
-    .trap_valid_o, .trap_event_o, .trap_accept_i(trap_accept_o), .redirect_o, .redirect_pc_o
+    .trap_valid_o, .trap_event_o, .trap_accept_i(trap_accept_o), .redirect_o, .redirect_pc_o,
+    .clean_done_i(1'b0), .clean_o(unused_clean), .invalidate_o(unused_invalidate), .fence_i_o(unused_fence_i)
   );
   rename_rob backend (
     .clk_i,
@@ -140,9 +143,11 @@ module head_system_backend (
     .checkpoint_valid_o,
     .checkpoint_released_o,
     .lookup_slot_i(5'd0),
-    .lookup_checkpoint_o(),
-    .resolve_checkpoint_o()
+    .lookup_checkpoint_o(unused_lookup_checkpoint),
+    .resolve_checkpoint_o(unused_resolve_checkpoint)
   );
+  wire unused_checkpoints = ^{unused_lookup_checkpoint, unused_resolve_checkpoint, unused_clean, unused_invalidate,
+    unused_fence_i};
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i) if (!rst_i) begin
     assert (trap_accept_o == raw_trap_accept) else $fatal(1, "SYSTEM_BACKEND_TRAP");

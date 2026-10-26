@@ -14,6 +14,7 @@ from verif.core.perf_programs import PROGRAMS
 from verif.core.reference import Reference, unpack_event
 from verif.lockstep.comparator import compare_traces
 
+PROFILES = ('early_load_core', 'cached_core')
 LATENCIES = (1, 10, 50)
 CHUNK = 50000
 LIMIT = 4000
@@ -87,15 +88,12 @@ def check(output, program, expected_events=None):
     return perf, counters
 
 
-def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default='early_load_core', help='fetched-core profile under config/')
-    name = parser.parse_args().config
+def measure(name):
     config = json.loads((ROOT/f'config/{name}.json').read_text())
     out = ROOT/f'out/cpi_{name}'
     out.mkdir(parents=True, exist_ok=True)
     (out/'receipt.json').unlink(missing_ok=True)
+    print(f'CPI profile {name}', flush=True)
     binary = build_fetched(out/'obj_dir', config_name=name)[0]
     results = []
     for program_name, build in PROGRAMS.items():
@@ -133,6 +131,14 @@ def main():
               'stamps; traces match the reference interpreter. Calibration programs only; not a workload baseline.'),
         indent=2)+'\n')
     print(f'CPI measurement check: PASS; receipt {(out/"receipt.json").relative_to(ROOT)}')
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', choices=PROFILES, help='one fetched-core profile under config/ (default: all)')
+    name = parser.parse_args().config
+    for profile in (name,) if name else PROFILES: measure(profile)
 
 
 if __name__ == '__main__':

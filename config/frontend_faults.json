@@ -22,6 +22,7 @@
     "rtl/system/head_dispatch.sv",
     "rtl/system/head_system_controller.sv",
     "rtl/backend/execution_backend.sv",
+    "rtl/frontend/tage_predictor.sv",
     "rtl/frontend/branch_predictor.sv",
     "rtl/frontend/fetch_unit.sv",
     "rtl/frontend/frontend_fault_decode.sv",

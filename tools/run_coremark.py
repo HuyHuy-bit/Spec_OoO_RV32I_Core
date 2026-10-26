@@ -27,7 +27,7 @@ SOURCE = ROOT/'out/coremark_src/coremark'
 OUT = ROOT/'out/coremark'
 FLAGS = ['-O2', '-march=rv32i', '-mabi=ilp32']
 ROB_N = 32
-PROFILES = ('early_load_core',)
+PROFILES = ('early_load_core', 'cached_core')
 LATENCIES = (1, 10, 50)
 
 

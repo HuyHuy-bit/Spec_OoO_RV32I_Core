@@ -28,8 +28,12 @@ using packed_bits::put;
 static void require(bool ok, const std::string& message) {
     if (!ok) throw std::runtime_error(message);
 }
+// TB_REFILL_FAULT=N: the N-th cacheable data-port line read answers with an access fault (zero: never).
+#ifndef TB_REFILL_FAULT
+#define TB_REFILL_FAULT 0
+#endif
 struct Transaction {
-    bool pending=false, write=false, uncached=false;
+    bool pending=false, write=false, uncached=false, fault=false;
     unsigned delay=0, id=0, address=0, mask=0, size=0;
     std::array<uint32_t,8> words{};
 };
@@ -84,6 +88,32 @@ static void sample(Vcpu_top& dut,const std::vector<uint8_t>& memory,std::map<std
     c["early_memory_launch"]+=MEMORY(early_loads__DOT__lsu__DOT__launch_memory);
     c["forward_launch"]+=MEMORY(early_loads__DOT__lsu__DOT__launch_forward);
 #endif
+#if TB_DCACHE
+#define DCACHE(name) MEMORY(early_loads__DOT__lsu__DOT__cached__DOT__dcache__DOT__##name)
+    // Hits and misses count every access, replays and squashed loads included; lookups are read-port cycles.
+    c["dcache_hit"]+=DCACHE(response_valid_o);
+    c["dcache_miss"]+=DCACHE(start_miss);
+    c["dcache_writeback"]+=DCACHE(state_q)==3 && DCACHE(mem_request_ready_i);
+    c["dcache_store_lookup"]+=DCACHE(enter) && (DCACHE(next_access)>>48&1);
+    // a store reaches the rob head with the store buffer full; a load hits while a store's miss is outstanding
+    c["store_buffer_full"]+=dut.admission_valid_o && MEMORY(early_loads__DOT__lsu__DOT__store_buffer_full_o);
+    c["dcache_hit_under_store_miss"]+=DCACHE(response_valid_o) && DCACHE(state_q)>=3 && !DCACHE(walk_q)
+        && (DCACHE(target_q)>>48&1);
+#endif
+#if TB_ICACHE
+#define ICACHE(name) CORE(frontend__DOT__icache__DOT__cache__DOT__##name)
+    // Lookups count wrong-path ones too; a prefetch counts the line checks the cache accepts.
+    c["icache_hit"]+=ICACHE(hit_valid_o);
+    c["icache_miss"]+=ICACHE(miss_o);
+    c["icache_prefetch"]+=ICACHE(prefetch_valid_i) && ICACHE(prefetch_ready_o);
+    c["icache_prefetch_hit"]+=ICACHE(prefetch_hit_o);
+    c["icache_request"]+=ICACHE(mem_request_valid_o) && ICACHE(mem_request_ready_i);
+    c["icache_invalidate"]+=ICACHE(invalidate_i);
+    // abandoned demands: a newer miss replaces one before delivery, or its fill arrives after fetch moved on
+    c["icache_demand_replaced"]+=ICACHE(demand_miss) && ICACHE(demand_valid_q) && !ICACHE(deliver)
+        && ICACHE(demand_line_q)!=ICACHE(stage_line_q);
+    c["icache_fill_unused"]+=(ICACHE(fill_valid_o) || ICACHE(fill_fault_o)) && !CORE(frontend__DOT__fill_take);
+#endif
 }
 
 int main(int argc,char** argv) {
@@ -135,6 +165,7 @@ int main(int argc,char** argv) {
         // Ownership monitors: cached writes follow their retirement on the committed stream; MMIO traffic precedes it.
         std::deque<Write> cached_writes, mmio_writes;
         std::deque<unsigned> mmio_reads;
+        unsigned mmio_read_count=0, line_reads=0;
         auto byte=[&](unsigned address) -> uint8_t& {
             if (address<memory.size()) return memory[address];
             if (address>=0x10000000 && address<0x10000010) return mmio[address-0x10000000];
@@ -144,7 +175,7 @@ int main(int argc,char** argv) {
         auto ready=[&] { return stall ? random()%4==0:random()%4!=0; };
         auto reset=[&] {
             instruction={}; data={}; memory=shadow=image; mmio.fill(0);
-            cached_writes.clear(); mmio_writes.clear(); mmio_reads.clear();
+            cached_writes.clear(); mmio_writes.clear(); mmio_reads.clear(); mmio_read_count=0; line_reads=0;
             hold_i=hold_d=false; events=0; halted=tohost_retired=false;
             dut.rst_i=1; dut.response_valid_i=0; dut.data_response_valid_i=0;
             for (int n=0;n<3;++n) { dut.clk_i=0; dut.eval(); dut.clk_i=1; dut.eval(); }
@@ -155,6 +186,7 @@ int main(int argc,char** argv) {
             for (unsigned n=0;n<RESPONSE_WORDS;++n) response[n]=0;
             if (!tx.pending || tx.delay) return;
             put(response,RSP_TRANSACTION_ID,4,tx.id);
+            if (tx.fault) { put(response,RSP_STATUS,2,1); return; }
             if (tx.write) return;
             if (tx.uncached) put(response,RSP_UNCACHED_READ_DATA,32,tx.words[0]);
             else for (unsigned n=0;n<8;++n) put(response,RSP_LINE_READ_DATA+32*n,32,tx.words[n]);
@@ -166,8 +198,12 @@ int main(int argc,char** argv) {
             tx.id=get32(request,REQ_TRANSACTION_ID,4); tx.address=get32(request,REQ_ADDRESS,32);
             tx.uncached=get32(request,REQ_UNCACHED,1); tx.write=get32(request,REQ_WRITE,1);
             tx.size=get32(request,REQ_UNCACHED_SIZE,2);
+            tx.fault=is_data && !tx.write && !tx.uncached && ++line_reads==TB_REFILL_FAULT;
+            // a device access must not pass a retired cacheable store that has not landed
+            require(!is_data || !tx.uncached || cached_writes.empty(),"MMIO access before older stores landed");
             require(is_data || (!tx.write && !tx.uncached),"invalid instruction request");
             require(tx.uncached || !(tx.address&31),"unaligned line request");
+            require(tx.uncached || tx.address<0x10000000,"line request to a device");
             tx.mask=get32(request,tx.uncached ? REQ_UNCACHED_WRITE_STROBE:REQ_LINE_WRITE_MASK,tx.uncached ? 4:32);
             const unsigned base=tx.uncached ? tx.address&~3u:tx.address;
             for (unsigned w=0;w<(tx.uncached ? 1u:8u);++w) {
@@ -186,7 +222,7 @@ int main(int argc,char** argv) {
                     require(!((tx.mask>>lane)&1) || uint8_t(tx.words[lane/4]>>(8*(lane%4)))==shadow[tx.address+lane],
                             "external line write differs from committed memory");
             } else if (tx.write) mmio_writes.push_back({tx.address&~3u,tx.mask,tx.words[0]});
-            else if (tx.uncached) mmio_reads.push_back(tx.address);
+            else if (tx.uncached) { mmio_reads.push_back(tx.address); ++mmio_read_count; }
         };
         auto complete=[&](Transaction& tx) {
             if (tx.write) {
@@ -346,7 +382,8 @@ int main(int argc,char** argv) {
                     for (unsigned n=0;n<1u+warm_window;++n)
                         for (const auto& [name,value]:counters[n]) std::cout<<"COUNTER "<<(n ? "region ":"all ")<<name<<' '<<value<<'\n';
                 }
-                std::cout<<(act4 ? "ACT4 PASS events=":"CORE PASS events=")<<events<<" cycles="<<cycle+1<<" dual="<<dual<<" recycles="<<recycles<<'\n';
+                std::cout<<(act4 ? "ACT4 PASS events=":"CORE PASS events=")<<events<<" cycles="<<cycle+1<<" dual="<<dual<<" recycles="<<recycles
+                         <<(act4 ? std::string():" mmio_reads="+std::to_string(mmio_read_count))<<'\n';
                 return 0;
             }
             settled=0;

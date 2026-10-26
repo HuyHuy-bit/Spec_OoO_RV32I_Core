@@ -1,5 +1,39 @@
 `default_nettype none
-// Flop storage shared by the L1 caches. Valid, dirty, LRU and pin bits live in each cache, so nothing here resets.
+// Flop storage shared by the L1 caches. Plain flops sit behind one clock gate per data byte and per tag entry:
+// that is far smaller than enable flops. SYNTHESIS instantiates the sky130 cell; simulation uses a latch-and-AND model.
+
+// Mutant simulations also define SYNTHESIS (to drop assertions), so VERILATOR keeps the latch model.
+`ifdef SYNTHESIS
+`ifndef VERILATOR
+`define L1_CACHE_GATE_CELL
+`endif
+`endif
+
+`ifdef L1_CACHE_GATE_CELL
+(* blackbox *) module sky130_fd_sc_hd__dlclkp_1 (input wire CLK, input wire GATE, output wire GCLK);
+endmodule
+`endif
+
+/* verilator lint_off DECLFILENAME */
+module l1_cache_array_gate (
+  // inputs
+  input  wire clk_i,
+  input  wire enable_i,
+  // outputs
+  output wire gclk_o
+);
+`ifdef L1_CACHE_GATE_CELL
+  sky130_fd_sc_hd__dlclkp_1 u_gate (.CLK(clk_i), .GATE(enable_i), .GCLK(gclk_o));
+`else
+  // the latch is transparent while the clock is low, so a late enable cannot glitch the gated clock
+  logic enable_q;
+  always_latch if (!clk_i) enable_q = enable_i;
+  assign gclk_o = clk_i & enable_q;
+`endif
+endmodule
+/* verilator lint_on DECLFILENAME */
+
+// Valid, dirty, LRU and pin bits live in each cache, so nothing here resets.
 // Read data is registered and a same-cycle write is not forwarded: the cache must not rely on bypass.
 // REGISTER_READ=0 exposes the combinational read for the 20 ns hit-path probe only.
 module l1_cache_array #(
@@ -25,14 +59,28 @@ module l1_cache_array #(
   output logic [WAYS-1:0][TAG_BITS-1:0] read_tag_o,
   output logic [WAYS-1:0][255:0] read_data_o
 );
-  logic [SETS-1:0][WAYS-1:0][TAG_BITS-1:0] tag_q;
-  logic [SETS-1:0][WAYS-1:0][255:0] data_q;
+  wire [SETS-1:0][WAYS-1:0][TAG_BITS-1:0] tag_q;
+  wire [SETS-1:0][WAYS-1:0][255:0] data_q;
 
-  always_ff @(posedge clk_i) begin
-    if (write_i) begin
-      if (write_tag_i) tag_q[write_set_i][write_way_i] <= write_tag_value_i;
-      for (int b = 0; b < 32; b++)
-        if (write_byte_mask_i[b]) data_q[write_set_i][write_way_i][8*b +: 8] <= write_data_i[8*b +: 8];
+  for (genvar s = 0; s < SETS; s++) begin : g_set
+    for (genvar w = 0; w < WAYS; w++) begin : g_way
+      wire entry_write = write_i && write_set_i == $clog2(SETS)'(s) && write_way_i == $clog2(WAYS)'(w);
+      wire tag_gclk;
+      logic [TAG_BITS-1:0] entry_tag_q;
+
+      l1_cache_array_gate u_tag_gate (.clk_i(clk_i), .enable_i(entry_write && write_tag_i), .gclk_o(tag_gclk));
+      always_ff @(posedge tag_gclk) entry_tag_q <= write_tag_value_i;
+      assign tag_q[s][w] = entry_tag_q;
+
+      for (genvar b = 0; b < 32; b++) begin : g_byte
+        wire byte_gclk;
+        logic [7:0] byte_q;
+
+        l1_cache_array_gate u_gate (.clk_i(clk_i), .enable_i(entry_write && write_byte_mask_i[b]),
+                                       .gclk_o(byte_gclk));
+        always_ff @(posedge byte_gclk) byte_q <= write_data_i[8*b +: 8];
+        assign data_q[s][w][8*b +: 8] = byte_q;
+      end
     end
   end
 

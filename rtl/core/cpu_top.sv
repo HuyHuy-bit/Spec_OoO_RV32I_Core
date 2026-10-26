@@ -1,7 +1,8 @@
 `default_nettype none
 // top-level two-wide core: fetch + predictor, execution_backend and identity recycling.
 module cpu_top #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SERVICE = 1, parameter bit MEMORY_SERVICE = 0,
-                              parameter bit EARLY_LOADS = 0,
+                              parameter bit EARLY_LOADS = 0, parameter bit TAGE = 1, parameter bit DCACHE = 0,
+                              parameter bit ICACHE = 0,
                               // TRACE=0 is the physical build: no reference-only event state
                               parameter bit TRACE = 1) (
   // inputs
@@ -52,6 +53,7 @@ module cpu_top #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SERVICE =
   output wire system_prepare_o, system_busy_o,
   output wire identity_drain_o, fatal_o
 );
+  localparam int CHECKPOINT_BITS = TAGE ? 36 : 12;
   wire fetch_fatal;
   assign fatal_o = fetch_fatal || memory_fatal_o;
   assign flush_ready_o = !memory_irrevocable_o;
@@ -72,10 +74,10 @@ module cpu_top #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SERVICE =
     assign frontend_value = 0;
   end
   wire [1:0] predicted_taken, retire_trained;
-  wire [23:0] predicted_checkpoint;
-  wire [11:0] redirect_checkpoint;
+  wire [2*CHECKPOINT_BITS-1:0] predicted_checkpoint;
+  wire [CHECKPOINT_BITS-1:0] redirect_checkpoint;
   wire [63:0] predicted_pc;
-  wire branch_redirect, system_redirect;
+  wire branch_redirect, system_redirect, icache_invalidate, fetch_hold;
   wire [31:0] system_pc;
   wire [31:0] branch_pc;
   wire running = !rst_i && !fatal_o;
@@ -125,9 +127,9 @@ module cpu_top #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SERVICE =
   end
 
   // instruction fetch and prediction
-  fetch_unit #(.PREDICT(1), .AHEAD(1)) frontend (
+  fetch_unit #(.PREDICT(1), .AHEAD(1), .TAGE(TAGE), .ICACHE(ICACHE)) frontend (
     .clk_i, .rst_i, .enable_i(fetch_enable && !drained && !memory_fatal_o),
-    .redirect_i(redirect_o), .redirect_pc_i(redirect_pc_o),
+    .redirect_i(redirect_o), .redirect_pc_i(redirect_pc_o), .invalidate_i(icache_invalidate), .hold_i(fetch_hold),
     .request_valid_o, .request_ready_i, .request_o, .response_valid_i, .response_ready_o, .response_i,
     .valid_o(fetch_valid_o), .take_i(dispatch_o), .instruction_o(fetch_instruction_o), .pc_o(fetch_pc_o),
     .fault_o(fetch_fault_o), .fault_cause_o(fetch_fault_cause_o), .busy_o(fetch_busy_o), .fatal_o(fetch_fatal),
@@ -140,7 +142,7 @@ module cpu_top #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SERVICE =
   );
 
   // execution backend
-  execution_backend #(.SYSTEM_SERVICE(TRAP_SERVICE), .MEMORY_SERVICE(MEMORY_SERVICE), .EARLY_LOADS(EARLY_LOADS), .TRACE(TRACE)) backend (
+  execution_backend #(.SYSTEM_SERVICE(TRAP_SERVICE), .MEMORY_SERVICE(MEMORY_SERVICE), .DCACHE(DCACHE), .EARLY_LOADS(EARLY_LOADS), .TRACE(TRACE), .CHECKPOINT_BITS(CHECKPOINT_BITS)) backend (
     .memory_issue_allowed_i(memory_issue_allowed_i && running), .admit_valid_i, .admit_id_i,
     .admission_valid_o, .admission_id_o, .admission_address_o, .admission_data_o, .admission_mask_o, .admission_size_o,
     .memory_prepare_o, .memory_busy_o, .memory_committed_o, .memory_irrevocable_o, .memory_fatal_o,
@@ -149,6 +151,7 @@ module cpu_top #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SERVICE =
     .data_response_valid_i, .data_response_ready_o, .data_response_i,
     .cancel_system_i(flush || !running), .system_prepare_o, .system_busy_o,
     .system_redirect_o(system_redirect), .system_redirect_pc_o(system_pc),
+    .icache_invalidate_o(icache_invalidate), .fetch_hold_o(fetch_hold),
     .system_trap_valid_o(trap_valid_o), .system_trap_event_o(trap_event_o),
     .clk_i, .rst_i, .flush_i(flush && running), .drained_i(drained),
     .valid_i(backend_valid), .instruction_i(fetch_instruction_o), .pc_i(fetch_pc_o),
@@ -168,6 +171,10 @@ module cpu_top #(parameter bit FRONTEND_FAULTS = 1, parameter bit TRAP_SERVICE =
     .fault_pending_o(backend_fault_o), .fault_event_o(backend_fault_event_o),
     .head_id_o(), .occupancy_o, .issue_occupancy_o(), .checkpoint_valid_o(), .identity_drain_o
   );
+  // fence.i invalidates the instruction cache only at the end of its data-cache clean
+  if (ICACHE && !DCACHE) begin : invalid_icache_configuration
+    initial $error("ICACHE_REQUIRES_DCACHE");
+  end
 
   // checks
 `ifndef SYNTHESIS

@@ -282,13 +282,29 @@ PROFILES = {
             'fatal_clear_redirect': ('rtl/frontend/fetch_unit.sv', 'end else if (!fatal_o) begin', 'end else if (!fatal_o || redirect_i) begin\n      fatal_o <= 0;', 1),
         },
     ),
+    'fetch_unit_icache': dict(
+        top='fetch_unit', sources=[],
+        inputs=['config/platform.yaml', 'config/memory_protocol.yaml', 'tools/gen_platform.py', 'tools/gen_memory_protocol.py'],
+        headers=['memory'], schema_checks=['platform-check', 'memory-protocol-check'],
+        parameters={'PREDICT': 1, 'AHEAD': 1, 'TAGE': 1, 'ICACHE': 1, 'REDIRECT_CYCLE': 1},
+        timeout=1800, random_key='random_cycles_per_seed', prefix='FETCH ICACHE PASS ',
+        geometry=lambda config: (config['line_bytes'], config['outstanding'], config['lanes']) == (32, 1, 2),
+        # a redirect hit waits HIT_STAGES (1) cycles for its read, plus REDIRECT_CYCLE
+        validate=lambda config, fields, seed: (fields.get('seed') == seed and fields.get('random') == config['random_cycles_per_seed']
+                                               and fields.get('directed', 0) >= 400 and fields.get('cycles', 0) > fields['directed'] + fields['random']
+                                               and fields.get('hit_bubbles') == 2),
+        required=['alignment_fault', 'bus_fault', 'cache_hit', 'cache_miss', 'cache_retry', 'cancelled_prefetch_offer', 'cancelled_prefetch_read', 'drain', 'dual_take', 'fault_take', 'fence_refetch', 'fill', 'fill_fault', 'hold_blocked', 'id_wrap', 'install_race_retry', 'invalidate', 'invalidate_in_flight', 'line_tail', 'older_epoch', 'partial_pair', 'pma_fault', 'prefetch_hit', 'redirect', 'redirect_during_prefetch_check', 'redirect_during_prefetch_filled', 'redirect_during_prefetch_miss', 'redirect_during_prefetch_offer', 'redirect_during_prefetch_read', 'redirect_hit_no_bubble', 'redirect_to_filling_line', 'request', 'request_stall', 'reset_idle', 'reset_offered', 'reset_pending', 'sequential_crossing_no_bubble'],
+        negatives={}, guards={}, extra_runs=[(['fatal'], 'fatal.log')],
+        mutation_args=['1', '0'], mismatch='fetch icache mismatch', mutation_flags=['-DSYNTHESIS', '-Wno-UNUSEDSIGNAL', '-Wno-UNUSEDPARAM'],
+        mutations={},
+    ),
     'cpu_top': dict(
         top='cpu_top', sources=[],
         inputs=['verif/core/core_reference.hpp', 'config/cpu_top.vlt', 'config/platform.yaml', 'config/memory_protocol.yaml', 'config/commit_event.yaml', 'config/execution_backend.json', 'config/fetch_unit.json', 'config/issue_backend.json', 'config/rename_rob.json', 'config/issue_queue.json', 'config/reorder_buffer.json', 'config/prf_contract.json', 'tools/gen_platform.py', 'tools/gen_memory_protocol.py', 'tools/gen_commit_event.py'],
         headers=['event', 'memory', 'csr'], schema_checks=['platform-check', 'memory-protocol-check', 'event-check'], parameters={'FRONTEND_FAULTS': 0, 'TRAP_SERVICE': 0},
         timeout=900, random_key=None, prefix='FETCH EXECUTION CORE PASS ',
         geometry=lambda config: not (config['parameters'] != {'FRONTEND_FAULTS': 0, 'TRAP_SERVICE': 0}),
-        validate=lambda config, fields, seed: not (fields.get('seed') != seed or fields.get('retired', 0) < 5000 or fields.get('cycles', 0) < 10000),
+        validate=lambda config, fields, seed: not (fields.get('seed') != seed or fields.get('retired', 0) < 5000 or 2*fields.get('cycles', 0) < fields.get('retired', 0)),
         required=['backend_fault', 'branch_redirect', 'completion_stall', 'dispatch_stall', 'drain', 'dual_dispatch', 'dual_retire', 'external_flush', 'fatal_injected', 'frontend_alignment', 'frontend_bus_fault', 'frontend_pma', 'not_taken', 'op_0', 'op_1', 'op_10', 'op_11', 'op_12', 'op_13', 'op_14', 'op_15', 'op_16', 'op_17', 'op_18', 'op_19', 'op_2', 'op_20', 'op_21', 'op_22', 'op_23', 'op_24', 'op_25', 'op_26', 'op_27', 'op_28', 'op_3', 'op_4', 'op_5', 'op_6', 'op_7', 'op_8', 'op_9', 'redirect_pending', 'redirect_request_stall', 'request_stall', 'reset', 'retire_stall', 'rob_full', 'taken', 'unsupported', 'wrong_path_fault_recovered'],
         negatives={'drain': (['negative'], 'FETCH_CORE_DRAIN')}, guards={}, extra_runs=[],
         mutation_args=['1'], mismatch='fetch execution core mismatch', mutation_flags=['-DSYNTHESIS', '-Wno-UNUSEDSIGNAL', '-Wno-UNUSEDPARAM'],

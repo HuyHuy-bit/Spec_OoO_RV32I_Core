@@ -1,5 +1,5 @@
 `default_nettype none
-module load_store_queue_properties (
+module load_store_queue_properties #(parameter int SB_N = 1) (
   input wire clk, rst, flush,
   input wire [1:0] allocate_load, allocate_store, allocate, retire,
   input wire recover,
@@ -13,9 +13,9 @@ module load_store_queue_properties (
   input wire data,
   input wire [3:0] data_id,
   input wire [31:0] data_value,
-  input wire committed_valid,
-  input wire [31:0] committed_address, committed_data,
-  input wire [3:0] committed_mask,
+  input wire [SB_N-1:0] committed_valid,
+  input wire [SB_N-1:0][31:0] committed_address, committed_data,
+  input wire [SB_N-1:0][3:0] committed_mask,
   input wire [31:0] memory_word,
   input wire load_take
 );
@@ -44,7 +44,7 @@ module load_store_queue_properties (
   assign retire_id[0] = id_q[head_q];
   assign retire_id[1] = id_q[head1];
 
-  load_store_queue #(.LQ_N(2), .SQ_N(2), .ROB_W(2), .ID_W(4)) dut (
+  load_store_queue #(.LQ_N(2), .SQ_N(2), .ROB_W(2), .ID_W(4), .SB_N(SB_N)) dut (
     .clk_i(clk), .rst_i(rst), .flush_i(flush), .head_slot_i(head_q),
     .allocate_load_i(allocate_load), .allocate_store_i(allocate_store), .allocate_i(allocate),
     .allocate_id_i(allocate_id), .allocate_ready_o(allocate_ready),
@@ -122,12 +122,14 @@ module load_store_queue_properties (
           expected_data[b*8 +: 8] = data_q[slot][b*8 +: 8];
         end
       end
-      if (!hit && found && requested[b] && committed_valid && committed_mask[b]
-          && committed_address[31:2] == address_q[pick][31:2]) begin
-        hit = 1;
-        from_committed = 1;
-        expected_data[b*8 +: 8] = committed_data[b*8 +: 8];
-      end
+      // then retired stores, youngest (highest index) first.
+      for (int k = SB_N-1; k >= 0; k--)
+        if (!hit && found && requested[b] && committed_valid[k] && committed_mask[k][b]
+            && committed_address[k][31:2] == address_q[pick][31:2]) begin
+          hit = 1;
+          from_committed = 1;
+          expected_data[b*8 +: 8] = committed_data[k][b*8 +: 8];
+        end
       expected_forward[b] = hit;
       if (hit) word[b*8 +: 8] = expected_data[b*8 +: 8];
     end

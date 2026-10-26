@@ -1,6 +1,8 @@
 `default_nettype none
 // head memory path: load, committed-store and mmio engines behind one data-port arbiter.
-module memory_transaction_path (
+// DCACHE=1: an accepted cached store leaves at once for the store buffer (committed_o pulses with its word);
+// the data port carries only mmio and faulting accesses, which wait until the buffer has drained.
+module memory_transaction_path #(parameter bit DCACHE = 0) (
   // inputs
   input  wire clk_i, rst_i, recovery_i, kill_i,
   input  wire desc_valid_i,
@@ -13,6 +15,8 @@ module memory_transaction_path (
   input  wire head_valid_i, issue_allowed_i, admit_valid_i,
   input  wire [12:0] head_id_i, admit_id_i,
   input  wire commit_i,
+  input  wire store_buffer_full_i,         // DCACHE: no room for an accepted store; zero without a store buffer
+  input  wire store_buffer_pending_i,      // DCACHE: retired stores not yet landed; zero without a store buffer
   input  wire take_i,
   input  wire request_ready_i,
   input  wire response_valid_i,
@@ -65,8 +69,10 @@ module memory_transaction_path (
   wire occupied = (|engine_busy) || port_busy || fatal_o;
   wire room = active && !occupied && !recovery_i && !kill_i;
   wire cancel = active && kill_i && !irrevocable_o;
-  wire launch_load = room && desc_valid_i && !store_i && load_ready;
-  wire launch_mmio = room && desc_valid_i && store_i && (uncached_i || fault_i) && mmio_ready;
+  // a device access must not pass an older retired store still in the store buffer
+  wire ordered = room && !store_buffer_pending_i;
+  wire launch_load = ordered && desc_valid_i && !store_i && load_ready;
+  wire launch_mmio = ordered && desc_valid_i && store_i && (uncached_i || fault_i) && mmio_ready;
   wire cached_desc = room && desc_valid_i && store_i && !uncached_i && !fault_i;
   wire can_reserve = active && pending_q && head_valid_i && issue_allowed_i && !kill_i && !recovery_i;
   wire result_head = head_valid_i && head_id_i == (load_valid ? load_id : mmio_id);
@@ -78,13 +84,13 @@ module memory_transaction_path (
   assign busy_o = !rst_i && occupied;
   assign owner_valid_o = !rst_i && (|engine_busy);
   assign owner_id_o = engine_busy[0] ? load_owner : engine_busy[1] ? cs_owner : mmio_owner;
-  assign committed_o = engine_busy[1];
+  assign committed_o = DCACHE ? commit_accept_o : engine_busy[1];
   assign irrevocable_o = !rst_i && (load_offered_q || mmio_irrevocable);
   assign reserve[0] = can_reserve && engine_busy[0] && head_id_i == load_owner;
   assign reserve[1] = request_valid[1];
   assign reserve[2] = can_reserve && engine_busy[2] && head_id_i == mmio_owner;
   assign desc_take_o = launch_load || launch_mmio || commit_accept_o;
-  assign commit_ready_o = active && !response_valid_i && cs_ready;
+  assign commit_ready_o = active && !response_valid_i && cs_ready && !store_buffer_full_i;
   assign valid_o = active && !response_valid_i && !cancel && result_head && (load_valid || mmio_valid);
   assign id_o = valid_o ? (load_valid ? load_id : mmio_id) : 13'd0;
   assign address_o = valid_o ? (load_valid ? load_address : mmio_address) : 32'd0;
@@ -130,7 +136,7 @@ module memory_transaction_path (
   );
 
   // committed-store engine
-  committed_store committed_engine (
+  committed_store #(.DCACHE(DCACHE)) committed_engine (
     .clk_i, .rst_i, .recovery_i(recovery_i || kill_i), .desc_valid_i(cached_desc),
     .store_i, .uncached_i, .fault_i, .id_i, .address_i, .write_data_i, .byte_mask_i, .size_i,
     .head_valid_i, .admit_valid_i,
@@ -158,6 +164,7 @@ module memory_transaction_path (
 
   // committed-store word view
   // a committed store touches one word, so the nonzero mask nibble locates it in the line.
+  // DCACHE: the accepted descriptor's word, valid with the committed_o pulse.
   always_comb begin
     committed_address_o = cs_line_address;
     committed_mask_o = 0;
@@ -168,6 +175,11 @@ module memory_transaction_path (
         committed_mask_o = cs_line_mask[w*4 +: 4];
         committed_data_o = cs_line_data[w*32 +: 32];
       end
+    if (DCACHE) begin
+      committed_address_o = {address_i[31:2], 2'b00};
+      committed_mask_o = byte_mask_i;
+      committed_data_o = write_data_i;
+    end
   end
 
   // shared data-port arbitration

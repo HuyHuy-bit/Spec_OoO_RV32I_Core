@@ -17,11 +17,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--to", help="last LibreLane step id to run, e.g. OpenROAD.ResizerTimingPostCTS")
     parser.add_argument("--threads", type=int, default=4, help="detailed-routing threads; each costs memory")
+    parser.add_argument("--period", type=float, help="clock period in ns; default: the A1 intent's")
     args = parser.parse_args()
     if not shutil.which("librelane"):
         raise RuntimeError("librelane not on PATH")
     OUT.mkdir(parents=True, exist_ok=True)
     intent = json.loads((ROOT / "config/a1_timing.json").read_text())
+    if args.period:
+        intent["period_ns"] = args.period
     # OpenROAD estimates parasitics from placement and routing, so the wire-load lines do not apply.
     constraints = "\n".join(line for line in sdc(intent, True).splitlines() if "wire_load" not in line)
     (OUT / "chip_top.sdc").write_text(constraints + "\n")

@@ -1,6 +1,7 @@
 `default_nettype none
 // cached-store engine: captures a retired store's bytes and writes them as one masked line request.
-module committed_store (
+// DCACHE=1: acceptance hands the bytes to the store buffer, so the engine never leaves EMPTY.
+module committed_store #(parameter bit DCACHE = 0) (
   // inputs
   input  wire clk_i, rst_i, recovery_i,
   input  wire desc_valid_i, store_i, uncached_i, fault_i,
@@ -88,7 +89,7 @@ module committed_store (
         fatal_o <= 1;
         fatal_reason_o <= error_reason;
       end else case (state_q)
-        EMPTY: if (accept_o) begin
+        EMPTY: if (accept_o && !DCACHE) begin
           owner_q <= id_i;
           address_q <= {address_i[31:5], 5'd0};
           mask_q <= {28'd0, byte_mask_i} << {address_i[4:2], 2'b00};

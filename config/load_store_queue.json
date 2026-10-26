@@ -41,8 +41,8 @@
     {
       "name": "rank_ignores_head",
       "source": "rtl/memory/load_store_queue.sv",
-      "old": "return 6'(ROB_W'(slot - head_slot_i)) + 6'd1;",
-      "new": "return 6'(slot) + 6'd1;",
+      "old": "return 6'(ROB_W'(slot - head_slot_i)) + 6'(SB_N);",
+      "new": "return 6'(slot) + 6'(SB_N);",
       "assertions": ["offer_exact", "forward_exact", "result_exact"]
     },
     {
@@ -83,15 +83,15 @@
     {
       "name": "data_wait",
       "source": "rtl/memory/load_store_queue.sv",
-      "old": "candidate_data_ready[s] = {4{sq_data_ready_q[s]}};",
-      "new": "candidate_data_ready[s] = 4'hf;",
+      "old": "candidate_data_ready[SB_N+s] = {4{sq_data_ready_q[s]}};",
+      "new": "candidate_data_ready[SB_N+s] = 4'hf;",
       "assertions": ["offer_exact"]
     },
     {
       "name": "committed_rank",
       "source": "rtl/memory/load_store_queue.sv",
-      "old": "candidate_age[SQ_N] = 0;",
-      "new": "candidate_age[SQ_N] = 6'd63;",
+      "old": "candidate_age[k] = 6'(k);",
+      "new": "candidate_age[k] = 6'd63;",
       "assertions": ["forward_exact", "result_exact"]
     },
     {

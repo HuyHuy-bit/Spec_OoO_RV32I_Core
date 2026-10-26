@@ -1,0 +1,1 @@
+{"schema": 1, "sources": ["rtl/generated/memory_protocol_pkg.sv", "rtl/memory/l1_cache_array.sv", "rtl/frontend/l1_icache.sv"]}

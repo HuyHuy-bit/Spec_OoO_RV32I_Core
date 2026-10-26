@@ -32,6 +32,9 @@ module store_forward #(parameter int CANDIDATES = 9) (
     assign older[s] = store_valid_i[s] && !store_killed_i[s] && store_age_i[s] < load_age_i;
   end
   logic [31:0] merged, shifted;
+  // per-byte selection state, assigned on every path so no procedural loop reads a stale value
+  logic [3:0] found, ready_byte;
+  logic [3:0][5:0] youngest;
 
   // youngest-store selection and byte merge
   always_comb begin
@@ -42,29 +45,27 @@ module store_forward #(parameter int CANDIDATES = 9) (
     result_o = 0;
     merged = memory_word_i;
     shifted = 0;
+    found = 0;
+    ready_byte = 0;
+    youngest = 0;
     if (load_valid_i && legal_load) begin
       for (int s = 0; s < CANDIDATES; s++)
         if (older[s] && !store_address_ready_i[s]) stall_o = 1;
       for (int b = 0; b < 4; b++) begin
-        logic found, ready_byte;
-        logic [5:0] youngest;
-        found = 0;
-        ready_byte = 0;
-        youngest = 0;
         for (int s = 0; s < CANDIDATES; s++) begin
           if (requested[b] && older[s] && store_address_ready_i[s]
               && store_address_i[s][31:2] == load_address_i[31:2] && store_mask_i[s][b]
-              && (!found || store_age_i[s] >= youngest)) begin
-            found = 1;
-            youngest = store_age_i[s];
-            ready_byte = store_data_ready_i[s][b];
+              && (!found[b] || store_age_i[s] >= youngest[b])) begin
+            found[b] = 1;
+            youngest[b] = store_age_i[s];
+            ready_byte[b] = store_data_ready_i[s][b];
             forward_data_o[b*8 +: 8] = store_data_i[s][b*8 +: 8];
           end
         end
-        forward_mask_o[b] = found;
+        forward_mask_o[b] = found[b];
         // select by age before checking readiness; an older value cannot substitute.
-        if (found && !ready_byte) stall_o = 1;
-        if (found) merged[b*8 +: 8] = forward_data_o[b*8 +: 8];
+        if (found[b] && !ready_byte[b]) stall_o = 1;
+        if (found[b]) merged[b*8 +: 8] = forward_data_o[b*8 +: 8];
       end
       memory_mask_o = requested & ~forward_mask_o;
       shifted = merged >> {load_address_i[1:0], 3'b000};

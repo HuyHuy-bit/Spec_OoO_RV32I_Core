@@ -13,14 +13,15 @@ from run_a1_probe import ROOT, digest, run, verify_synthesis_suite
 from run_a1_timing import analyze, sdc
 
 
-# chip_top pins cpu_top to the early-load profile parameters, so it shares that profile's sources.
+# chip_top pins cpu_top to the cached profile parameters, so it shares that profile's sources.
 DEFAULT_TOP = "chip_top"
-DEFAULT_SOURCES = "early_load_core"
+DEFAULT_SOURCES = "cached_core"
 # module-level defaults are imported by run_chip_librelane.py; main() overrides them for other tops.
 OUT = ROOT / "out/chip_timing"
 TOP = DEFAULT_TOP
 SOURCES = json.loads((ROOT / f"config/{DEFAULT_SOURCES}.json").read_text())["sources"] + ["rtl/core/chip_top.sv"]
 TIE = "sky130_fd_sc_hd__conb_1"
+BUFFER = "sky130_fd_sc_hd__buf_1"
 REGISTER_PATHS = """read_liberty $liberty
 read_verilog $netlist
 link_design $top
@@ -65,11 +66,12 @@ def main() -> None:
     abc = OUT / "abc.constr"
     abc.write_text(f'set_driving_cell {config["abc_driver"]}\nset_load {config["abc_load_ff"]}\n')
     prefix = OUT.relative_to(ROOT)
-    # splitnets and hilomap remove the concatenated and constant assigns the pinned OpenSTA cannot parse.
+    # splitnets and hilomap remove the concatenated and constant assigns the pinned OpenSTA cannot parse;
+    # insbuf replaces the rest, output bits driven by one net (the cache's line write mask).
     script = (f'read_slang --top {TOP} -D SYNTHESIS {" ".join(SOURCES)}; '
               f'synth -top {TOP} -flatten -noabc; dfflibmap -liberty {liberty} {dont_use}; '
               f'abc -liberty {liberty} {dont_use} -constr {abc.relative_to(ROOT)} -D {config["period_ns"] * 1000}; '
-              f'clean -purge; splitnets; hilomap -hicell {TIE} HI -locell {TIE} LO; opt_clean -purge; '
+              f'clean -purge; splitnets; hilomap -hicell {TIE} HI -locell {TIE} LO; opt_clean -purge; insbuf -buf {BUFFER} A X; '
               f'read_liberty -lib {liberty}; check -assert; '
               f'stat -liberty {liberty}; write_json {prefix}/mapped.json; '
               f'write_verilog -noattr -noexpr {prefix}/mapped.v')

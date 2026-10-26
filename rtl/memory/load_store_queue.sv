@@ -1,6 +1,8 @@
 `default_nettype none
 // load and store queues: program-order entries, address/data updates, disambiguation and the oldest early load.
-module load_store_queue #(parameter int LQ_N = 8, parameter int SQ_N = 8, parameter int ROB_W = 5, parameter int ID_W = 13) (
+// committed_*[k]: the k-th oldest retired store whose bytes are not yet in memory (SB_N of them).
+module load_store_queue #(parameter int LQ_N = 8, parameter int SQ_N = 8, parameter int ROB_W = 5, parameter int ID_W = 13,
+                          parameter int SB_N = 1) (
   // inputs
   input  wire clk_i, rst_i, flush_i,
   input  wire [ROB_W-1:0] head_slot_i,
@@ -19,9 +21,9 @@ module load_store_queue #(parameter int LQ_N = 8, parameter int SQ_N = 8, parame
   input  wire data_i,
   input  wire [ID_W-1:0] data_id_i,
   input  wire [31:0] data_value_i,
-  input  wire committed_valid_i,
-  input  wire [31:0] committed_address_i, committed_data_i,
-  input  wire [3:0] committed_mask_i,
+  input  wire [SB_N-1:0] committed_valid_i,
+  input  wire [SB_N-1:0][31:0] committed_address_i, committed_data_i,
+  input  wire [SB_N-1:0][3:0] committed_mask_i,
   input  wire [31:0] memory_word_i,
   input  wire load_take_i,
 
@@ -54,9 +56,9 @@ module load_store_queue #(parameter int LQ_N = 8, parameter int SQ_N = 8, parame
   wire [ROB_W-1:0] recover_age = recover_slot_i - head_slot_i;
 
   // rob-relative age and recovery membership
-  // committed owner has rank zero; live ranks are rob-head distance plus one.
+  // committed store k has age k; live ranks are rob-head distance plus SB_N, so every live rank is younger.
   function automatic logic [5:0] rank(input logic [ROB_W-1:0] slot);
-    return 6'(ROB_W'(slot - head_slot_i)) + 6'd1;
+    return 6'(ROB_W'(slot - head_slot_i)) + 6'(SB_N);
   endfunction
 
   for (genvar i = 0; i < LQ_N; i++) begin : loads
@@ -103,34 +105,38 @@ module load_store_queue #(parameter int LQ_N = 8, parameter int SQ_N = 8, parame
     end
   end
 
-  logic [SQ_N:0] candidate_valid, candidate_ready;
-  logic [SQ_N:0][5:0] candidate_age;
-  logic [SQ_N:0][31:0] candidate_address, candidate_data;
-  logic [SQ_N:0][3:0] candidate_mask, candidate_data_ready;
+  logic [SB_N+SQ_N-1:0] candidate_valid, candidate_ready;
+  logic [SB_N+SQ_N-1:0][5:0] candidate_age;
+  logic [SB_N+SQ_N-1:0][31:0] candidate_address, candidate_data;
+  logic [SB_N+SQ_N-1:0][3:0] candidate_mask, candidate_data_ready;
 
   // store forwarding candidates
+  // committed stores come first: their ages are constants below every queue rank, so the selector's
+  // youngest-wins chain over them needs no age compare.
   always_comb begin
-    for (int s = 0; s < SQ_N; s++) begin
-      candidate_valid[s] = sq_live[s];
-      candidate_ready[s] = sq_ready_q[s];
-      candidate_age[s] = rank(sq_id_q[s][ROB_W-1:0]);
-      candidate_address[s] = sq_address_q[s];
-      candidate_data[s] = sq_data_q[s];
-      candidate_mask[s] = sq_mask_q[s];
-      candidate_data_ready[s] = {4{sq_data_ready_q[s]}};
+    for (int k = 0; k < SB_N; k++) begin
+      candidate_valid[k] = committed_valid_i[k];
+      candidate_ready[k] = 1;
+      candidate_age[k] = 6'(k);
+      candidate_address[k] = committed_address_i[k];
+      candidate_data[k] = committed_data_i[k];
+      candidate_mask[k] = committed_mask_i[k];
+      candidate_data_ready[k] = 4'hf;
     end
-    candidate_valid[SQ_N] = committed_valid_i;
-    candidate_ready[SQ_N] = 1;
-    candidate_age[SQ_N] = 0;
-    candidate_address[SQ_N] = committed_address_i;
-    candidate_data[SQ_N] = committed_data_i;
-    candidate_mask[SQ_N] = committed_mask_i;
-    candidate_data_ready[SQ_N] = 4'hf;
+    for (int s = 0; s < SQ_N; s++) begin
+      candidate_valid[SB_N+s] = sq_live[s];
+      candidate_ready[SB_N+s] = sq_ready_q[s];
+      candidate_age[SB_N+s] = rank(sq_id_q[s][ROB_W-1:0]);
+      candidate_address[SB_N+s] = sq_address_q[s];
+      candidate_data[SB_N+s] = sq_data_q[s];
+      candidate_mask[SB_N+s] = sq_mask_q[s];
+      candidate_data_ready[SB_N+s] = {4{sq_data_ready_q[s]}};
+    end
   end
   wire stall;
 
   // byte selection and load result
-  store_forward #(.CANDIDATES(SQ_N+1)) selector (
+  store_forward #(.CANDIDATES(SB_N+SQ_N)) selector (
     .load_valid_i(pick_found), .load_address_i(lq_address_q[pick]), .load_size_i(lq_size_q[pick]),
     .load_unsigned_i(lq_unsigned_q[pick]), .load_age_i(rank(lq_id_q[pick][ROB_W-1:0])),
     .store_valid_i(candidate_valid), .store_killed_i('0), .store_address_ready_i(candidate_ready),
@@ -208,7 +214,8 @@ module load_store_queue #(parameter int LQ_N = 8, parameter int SQ_N = 8, parame
 
   // checks
 `ifndef SYNTHESIS
-  initial assert (LQ_N >= 2 && SQ_N >= 2 && LQ_N == 2**LW && SQ_N == 2**SW && ROB_W <= 5 && ID_W >= ROB_W)
+  initial assert (LQ_N >= 2 && SQ_N >= 2 && LQ_N == 2**LW && SQ_N == 2**SW && ROB_W <= 5 && ID_W >= ROB_W
+                  && SB_N >= 1 && 2**ROB_W + SB_N <= 64)
     else $fatal(1, "LSQ_GEOMETRY");
   always_ff @(posedge clk_i) if (!rst_i) begin
     assert ((allocate_i & ~allocate_ready_o) == 0 && allocate_i != 2'b10) else $fatal(1, "LSQ_ALLOCATE");
