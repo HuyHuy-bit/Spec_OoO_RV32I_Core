@@ -27,7 +27,8 @@ module branch_predictor #(parameter int ENTRIES = 256, parameter bit TAGE = 0,
   logic [63:0][31:2] jalr_target_q;  // retired jalr targets are word aligned
   logic [63:0] jalr_valid_q;
 
-  wire [1:0] tage_taken;
+  wire [1:0] tage_taken, train_drop;
+  logic [1:0][HISTORY_BITS-1:0] train_history;  // commit history before each retiring lane's own branch
   if (TAGE) begin : tage_direction
     wire [1:0] branch, path, update, outcome;
     for (genvar lane = 0; lane < 2; lane++) begin : ports
@@ -39,13 +40,16 @@ module branch_predictor #(parameter int ENTRIES = 256, parameter bit TAGE = 0,
       assign update[lane] = retire_i[lane] && retire_instruction_i[lane*32 +: 7] == 7'h63;
       assign outcome[lane] = retire_next_i[lane*32 +: 32] != retire_pc_i[lane*32 +: 32] + 32'd4;
     end
-    tage_predictor #(.LOOKUPS(2), .UPDATES(2), .EXTERNAL_HISTORY(1)) direction (
+    // Retired branches train one per cycle, in order, from the predictor's queue, hashed with the history they retired under.
+    tage_predictor #(.LOOKUPS(2), .UPDATES(2), .EXTERNAL_HISTORY(1), .TRAIN_QUEUE(1)) direction (
       .clk_i, .rst_i, .lookup_valid_i(2'b11), .lookup_pc_i(pc_i), .lookup_history_i(ghr_q),
       .lookup_branch_i(branch), .lookup_path_i(path), .lookup_taken_o(tage_taken),
-      .update_valid_i(update), .update_taken_i(outcome), .update_pc_i(retire_pc_i)
+      .update_valid_i(update), .update_taken_i(outcome), .update_pc_i(retire_pc_i),
+      .update_history_i(train_history), .update_dropped_o(train_drop)
     );
   end else begin : gshare_direction
     assign tage_taken = 0;
+    assign train_drop = 0;
   end
 
   // call and return classification
@@ -126,6 +130,7 @@ module branch_predictor #(parameter int ENTRIES = 256, parameter bit TAGE = 0,
       retire_jalr[lane] = op == 7'h67;
       retire_call[lane] = is_call(op, rd);
       retire_return[lane] = is_return(op, rd, rs1);
+      train_history[lane] = commit_ghr;
       train_index[lane] = retire_pc_i[lane*32+2 +: IW] ^ IW'(commit_ghr);
       train_write[lane] = retire_i[lane] && retire_branch[lane];
       if (!(lane == 1 && train_write[0] && train_index[0] == train_index[1])) count = counter_q[train_index[lane]];
@@ -145,7 +150,7 @@ module branch_predictor #(parameter int ENTRIES = 256, parameter bit TAGE = 0,
   end
 
   wire unused = ^{retire_instruction_i[63:52], retire_instruction_i[46:44],
-                  retire_instruction_i[31:20], retire_instruction_i[14:12]};
+                  retire_instruction_i[31:20], retire_instruction_i[14:12], train_drop, train_history};  // train_drop is a bench counter
 
   // predictor storage and recovery
   always_ff @(posedge clk_i) begin

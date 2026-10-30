@@ -24,7 +24,6 @@ module tage_recovery_tb;
   endtask
   task automatic history(input logic [31:0] expected);
     if (dut.ghr_q !== expected) $fatal(1, "HISTORY got=%h expected=%h", dut.ghr_q, expected);
-    if (dut.commit_ghr_q !== dut.tage_direction.direction.history_q) $fatal(1, "COMMIT_HISTORY");
   endtask
   initial begin
     automatic logic [31:0] h, committed;
@@ -76,6 +75,31 @@ module tage_recovery_tb;
     // both speculative state and table history clear on reset.
     rst = 1; tick(); history(0);
     if (committed != 5 || dut.commit_ptr_q != 0 || dut.ras_ptr_q != 0) $fatal(1, "RESET");
+    // training queue: a lane-one-only branch enqueues alone and drains the next cycle.
+    rst = 0; tick(); tick();
+    if (dut.tage_direction.direction.train_queue.count_q != 0) $fatal(1, "QUEUE_RESET");
+    retire = 2; retire_instruction = {32'h00000463,32'h13}; retire_pc = {32'h400,32'h3fc}; retire_next = {32'h404,32'h400};
+    tick(); retire = 0;
+    if (dut.tage_direction.direction.train_queue.count_q != 1) $fatal(1, "QUEUE_LANE1_ONLY");
+    tick();
+    if (dut.tage_direction.direction.train_queue.count_q != 0) $fatal(1, "QUEUE_LANE1_DRAIN");
+    // a taken/not-taken pair: lane one is hashed with lane zero's outcome shifted in (bank 0 index: 0x1 ^ 0x4 ^ 1 = 4, not 5).
+    retire = 3; retire_instruction = {32'h00000463,32'h00000463}; retire_pc = {32'h404,32'h400}; retire_next = {32'h408,32'h500};
+    tick(); retire = 0;
+    if (dut.tage_direction.direction.train_queue.count_q != 2
+        || dut.tage_direction.direction.train_queue.queue_q[1].hash.index[0] != 6'd4) $fatal(1, "QUEUE_PAIR_HISTORY");
+    tick(); tick(); tick();
+    if (dut.tage_direction.direction.train_queue.count_q != 0) $fatal(1, "QUEUE_PAIR");
+    // two branches a cycle outrun one update a cycle: the queue fills to four and the youngest arrival drops.
+    retire = 3; retire_instruction = {32'h00000463,32'h00000463}; retire_pc = {32'h404,32'h400}; retire_next = {32'h408,32'h500};
+    tick(); tick(); tick();
+    if (dut.tage_direction.direction.train_queue.count_q != 4) $fatal(1, "QUEUE_FILL");
+    #1 if (dut.train_drop != 1) $fatal(1, "QUEUE_DROP");
+    tick(); retire = 0;
+    if (dut.tage_direction.direction.train_queue.count_q != 4) $fatal(1, "QUEUE_FULL");
+    repeat (4) tick();
+    // a drop loses that arrival's training only: later entries carry their own retirement-time history.
+    if (dut.tage_direction.direction.train_queue.count_q != 0) $fatal(1, "QUEUE_DRAIN");
     $display("PASS recovery"); $finish;
   end
   wire unused = ^{target, checkpoint[71:68]};

@@ -41,3 +41,6 @@ public_flat_rd -module "l1_icache" -var "stage_line_q"
 public_flat_rd -module "l1_icache" -var "fill_valid_o"
 public_flat_rd -module "l1_icache" -var "fill_fault_o"
 public_flat_rd -module "l1_icache" -var "invalidate_i"
+// and branch_predictor, for the TAGE training queue drops
+inline -module "branch_predictor"
+public_flat_rd -module "branch_predictor" -var "train_drop"

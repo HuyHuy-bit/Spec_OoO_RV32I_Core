@@ -26,13 +26,16 @@ module control_flow_pipeline (
   wire [31:0] result, next_pc, cause, trap_value;
   wire execute_trap, taken;
   wire cfi = decoded.op inside {OP_BRANCH, OP_JAL, OP_JALR};
-  logic pending_q, cfi_q, resolved_q;
+  logic pending_q, cfi_q, resolved_q, done_q;
   commit_event_t built;
 
+  // a correct prediction may complete in the cycle it resolves; a mispredict or a trap resolves first, so recovery precedes completion.
+  wire resolve_pending = cfi_q && !event_o.trap && !resolved_q;
+  wire free = (!resolve_pending || resolve_take_i) && (done_q || take_i);
   assign busy_o = pending_q && !rst_i && !flush_i;
-  assign ready_o = !rst_i && !flush_i && (!pending_q || take_i);
-  assign resolve_valid_o = busy_o && cfi_q && !event_o.trap && !resolved_q;
-  assign valid_o = busy_o && (!cfi_q || event_o.trap || resolved_q);
+  assign ready_o = !rst_i && !flush_i && (!pending_q || free);
+  assign resolve_valid_o = busy_o && resolve_pending;
+  assign valid_o = busy_o && !done_q && (!cfi_q || event_o.trap || resolved_q || !mispredict_o);
   assign next_pc_o = event_o.pc_after;
 
   // decode and execution datapath
@@ -68,19 +71,22 @@ module control_flow_pipeline (
   end
 
   // prediction resolution and result holding
-  // resolution is acknowledged once; the result waits for a later completion grant.
+  // resolution and completion are each acknowledged once, in either order for a correct prediction.
   always_ff @(posedge clk_i) begin
     if (rst_i || flush_i) begin
       pending_q <= 0;
       cfi_q <= 0;
       resolved_q <= 0;
+      done_q <= 0;
     end else begin
       if (resolve_take_i) resolved_q <= 1;
-      if (take_i) pending_q <= 0;
+      if (take_i) done_q <= 1;
+      if (pending_q && free) pending_q <= 0;
       if (launch_i) begin
         pending_q <= 1;
         cfi_q <= cfi;
         resolved_q <= 0;
+        done_q <= 0;
         id_o <= id_i;
         event_o <= built;
         taken_o <= taken;

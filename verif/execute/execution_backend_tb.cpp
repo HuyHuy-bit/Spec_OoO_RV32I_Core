@@ -141,7 +141,9 @@ public:
         bool redirect = resolve && queue[resolver].miss;
         bool cancel = redirect && (busy&2) && locate(held[1]) > resolver;
         unsigned pending = busy & 2;
-        if ((busy&1) && (!queue[resolver].cfi() || queue[resolver].fault || queue[resolver].resolved)) pending |= 1;
+        // a correct prediction may complete before or with its resolve; a mispredict or a fault resolves (or needs no resolve) first
+        if ((busy&1) && !queue[resolver].done
+            && (!queue[resolver].cfi() || queue[resolver].fault || queue[resolver].resolved || !queue[resolver].miss)) pending |= 1;
         if (cancel) { busy &= ~2U; pending &= ~2U; }
         unsigned complete = pending & in.complete, wb = 0;
         for (unsigned lane = 0; lane < 2; ++lane) if (complete & (1U << lane)) {
@@ -162,9 +164,16 @@ public:
             && queue.size()+count <= 32 && resident()+count <= 16
             && (!(selected&cfi) || free_cp >= 0) ? selected : 0;
         for (unsigned lane = 0; lane < count; ++lane) if (uses[(tail+lane)%32] >= 256) alloc = 0;
+        // port 0 frees once its completion and its resolve (when one is due) have both happened by the end of this cycle
+        bool free0 = true;
+        if (busy&1) {
+            const auto& h = queue[resolver];
+            free0 = (h.done || (complete&1)) && (!h.cfi() || h.fault || h.resolved || resolve);
+        }
         std::array<int, 2> pick{-1,-1};
         for (unsigned port = 0; port < 2; ++port) {
-            if (!active || redirect || !(in.execute & (1U << port)) || (held[port] >= 0 && !(complete & (1U << port)))) continue;
+            const bool occupied = port ? (held[1] >= 0 && !(complete & 2)) : (held[0] >= 0 && !free0);
+            if (!active || redirect || !(in.execute & (1U << port)) || occupied) continue;
             for (unsigned n = 0; n < queue.size(); ++n) {
                 if (!queue[n].queued || (port && (pick[0] == int(n) || queue[n].cfi()))) continue;
                 bool ready = true;
@@ -178,6 +187,13 @@ public:
                 }
                 if (ready) { pick[port] = int(n); break; }
             }
+        }
+        if (busy&1) {
+            const auto& h = queue[resolver];
+            coverage["complete_before_resolve"] += (complete&1) && h.cfi() && !h.fault && !h.resolved && !resolve;
+            coverage["complete_with_resolve"] += (complete&1) && resolve && !h.miss;
+            coverage["done_waits_for_resolve"] += h.done && h.cfi() && !h.resolved;
+            coverage["back_to_back_cfi"] += pick[0] >= 0 && (complete&1) && h.cfi();
         }
         dut.memory_issue_allowed_i=0; dut.admit_valid_i=0; dut.admit_id_i=0;
         dut.data_request_ready_i=0; dut.data_response_valid_i=0;
@@ -281,6 +297,7 @@ public:
                     if (cancel) held[1] = -1;
                     queue.resize(resolver+1); tail = (e.id%32+1)%32;
                 }
+                if (held[0] >= 0 && queue[locate(held[0])].done) { ++coverage["late_resolve_frees"]; held[0] = -1; }
             }
             for (unsigned port = 0; port < 2; ++port) {
                 if (complete & (1U << port)) {
@@ -288,7 +305,7 @@ public:
                     for (unsigned older = 0; older < n; ++older) if (!queue[older].done) { ++coverage["out_of_order_complete"]; break; }
                     coverage["resultless"] += e.rd == 0;
                     if (e.fault) { ++coverage["fault_complete"]; ++coverage["fault_op_"+std::to_string(e.op)]; }
-                    held[port] = -1;
+                    if (port || !e.cfi() || e.fault || e.resolved) held[port] = -1;
                 }
                 if (pick[port] >= 0) {
                     auto& e = queue[unsigned(pick[port])]; e.queued = false; held[port] = int(e.id);

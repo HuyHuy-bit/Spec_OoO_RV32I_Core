@@ -89,13 +89,7 @@ module committed_store #(parameter bit DCACHE = 0) (
         fatal_o <= 1;
         fatal_reason_o <= error_reason;
       end else case (state_q)
-        EMPTY: if (accept_o && !DCACHE) begin
-          owner_q <= id_i;
-          address_q <= {address_i[31:5], 5'd0};
-          mask_q <= {28'd0, byte_mask_i} << {address_i[4:2], 2'b00};
-          data_q <= {224'd0, write_data_i} << {address_i[4:2], 5'b00000};
-          state_q <= REQUEST;
-        end
+        EMPTY: if (accept_o && !DCACHE) state_q <= REQUEST;
         REQUEST: if (request_ready_i) state_q <= RESPONSE;
         RESPONSE: if (response_valid_i) begin
           transaction_q <= transaction_q + 1'b1;
@@ -104,6 +98,22 @@ module committed_store #(parameter bit DCACHE = 0) (
         default: ;
       endcase
     end
+  end
+
+  // the cached build never leaves EMPTY, so the capture registers do not exist there; tying them off keeps them from synthesizing as undriven
+  if (!DCACHE) begin : capture
+    always_ff @(posedge clk_i) if (!rst_i && !fatal_o && error_reason == 0 && state_q == EMPTY && accept_o) begin
+      owner_q <= id_i;
+      address_q <= {address_i[31:5], 5'd0};
+      mask_q <= {28'd0, byte_mask_i} << {address_i[4:2], 2'b00};
+      data_q <= {224'd0, write_data_i} << {address_i[4:2], 5'b00000};
+    end
+  end else begin : no_capture
+    assign owner_q = '0;
+    assign address_q = '0;
+    assign mask_q = '0;
+    assign data_q = '0;
+    wire unused = ^address_i[31:2];
   end
 
   // checks

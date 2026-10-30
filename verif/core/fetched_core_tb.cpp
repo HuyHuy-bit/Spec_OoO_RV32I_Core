@@ -100,6 +100,7 @@ static void sample(Vcpu_top& dut,const std::vector<uint8_t>& memory,std::map<std
     c["dcache_hit_under_store_miss"]+=DCACHE(response_valid_o) && DCACHE(state_q)>=3 && !DCACHE(walk_q)
         && (DCACHE(target_q)>>48&1);
 #endif
+    c["tage_train_drop"]+=CORE(frontend__DOT__prediction__DOT__predictor__DOT__train_drop);
 #if TB_ICACHE
 #define ICACHE(name) CORE(frontend__DOT__icache__DOT__cache__DOT__##name)
     // Lookups count wrong-path ones too; a prefetch counts the line checks the cache accepts.

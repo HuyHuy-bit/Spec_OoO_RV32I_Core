@@ -15,8 +15,10 @@ module tage_predictor_tb #(parameter int AGE_BITS = 18);
     .clk_i(clk), .rst_i(rst), .lookup_valid_i(lookup_valid), .lookup_pc_i(lookup_pc),
     .update_valid_i(update_valid), .update_taken_i(taken), .update_pc_i(update_pc),
     .lookup_history_i(32'd0), .lookup_branch_i(1'b0), .lookup_path_i(1'b0),
-    .lookup_taken_o(prediction)
+    .lookup_taken_o(prediction), .update_history_i(32'd0), .update_dropped_o(dropped)
   );
+  wire [1:0] dropped;
+  wire unused = ^dropped;
 
   initial begin
     automatic string path, line;

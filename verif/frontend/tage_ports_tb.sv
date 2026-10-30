@@ -14,8 +14,11 @@ module tage_ports_tb;
   tage_predictor #(.AGE_BITS(10), .LOOKUPS(2), .UPDATES(2), .EXTERNAL_HISTORY(1)) dut (
     .clk_i(clk), .rst_i(rst), .lookup_valid_i(valid), .lookup_pc_i(pc), .lookup_history_i(history),
     .lookup_branch_i(branch), .lookup_path_i(path), .lookup_taken_o(prediction),
-    .update_valid_i(update), .update_taken_i(outcome), .update_pc_i(update_pc)
+    .update_valid_i(update), .update_taken_i(outcome), .update_pc_i(update_pc),
+    .update_history_i(64'd0), .update_dropped_o(dropped)
   );
+  wire [1:0] dropped;
+  wire unused = ^dropped;
   initial begin
     automatic string filename, line;
     automatic int fd, count = 0;

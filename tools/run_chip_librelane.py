@@ -18,6 +18,9 @@ def main() -> None:
     parser.add_argument("--to", help="last LibreLane step id to run, e.g. OpenROAD.ResizerTimingPostCTS")
     parser.add_argument("--threads", type=int, default=4, help="detailed-routing threads; each costs memory")
     parser.add_argument("--period", type=float, help="clock period in ns; default: the A1 intent's")
+    parser.add_argument("--from", dest="start", help="start at this step instead of overwriting the run")
+    parser.add_argument("--state", help="initial state JSON for --from; resuming without one chains onto the run's last state")
+    parser.add_argument("--tag", default="latest", help="run directory name under out/chip_librelane/runs")
     args = parser.parse_args()
     if not shutil.which("librelane"):
         raise RuntimeError("librelane not on PATH")
@@ -42,6 +45,10 @@ def main() -> None:
         "SYNTH_STRATEGY": "DELAY 0",
         # the RTL gates already lint every source with the pinned Verilator.
         "RUN_LINTER": False,
+        # repair_design picked these delay cells as fanout buffers: 44 of them, 26 ns, on the post-CTS worst path.
+        # sign-off is TT (plan O4); repairing every STA corner chases the SS corner's much larger violations.
+        "RSZ_CORNERS": ["nom_tt_025C_1v80"],
+        "EXTRA_EXCLUDED_CELLS": ["sky130_fd_sc_hd__clkdlybuf4s*"],
         "CLOCK_PORT": "clk_i",
         "CLOCK_PERIOD": intent["period_ns"],
         "PNR_SDC_FILE": str(OUT / "chip_top.sdc"),
@@ -53,8 +60,10 @@ def main() -> None:
         "DRT_THREADS": args.threads,
     }
     (OUT / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-    command = ["librelane", "--pdk", "sky130A", "--scl", "sky130_fd_sc_hd", "--run-tag", "latest",
-               "--overwrite", str(OUT / "config.json")] + (["--to", args.to] if args.to else [])
+    command = ["librelane", "--pdk", "sky130A", "--scl", "sky130_fd_sc_hd", "--run-tag", args.tag]
+    command += ["--from", args.start] if args.start else ["--overwrite"]
+    if args.state: command += ["--with-initial-state", args.state]
+    command += [str(OUT / "config.json")] + (["--to", args.to] if args.to else [])
     print(f"chip librelane: {' '.join(command)}", flush=True)
     raise SystemExit(subprocess.run(command, cwd=ROOT).returncode)
 

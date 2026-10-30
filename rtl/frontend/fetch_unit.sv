@@ -1,10 +1,10 @@
 `default_nettype none
-// two-wide fetch: one 32-byte line buffer, next-line prefetch, the last line left and the branch predictor.
+// two-wide fetch: one 32-byte line buffer, next-line prefetch, the last L0_LINES lines left and the branch predictor.
 // ICACHE=1: lines come from l1_icache, read once per line into line_q; an idle line checks line+1 with a prefetch,
 // whose hit fills the ahead buffer. REDIRECT_CYCLE=1 looks a redirect target up from pc_q the next cycle (ruling Q7).
 module fetch_unit #(parameter bit PREDICT = 0, parameter bit AHEAD = 0,
                     parameter bit TAGE = 0, parameter int CHECKPOINT_BITS = TAGE ? 36 : 12,
-                    parameter bit ICACHE = 0, parameter bit REDIRECT_CYCLE = 1) (
+                    parameter bit ICACHE = 0, parameter bit REDIRECT_CYCLE = 1, parameter int L0_LINES = 4) (  // L0_LINES: a power of two
   // inputs
   input  wire clk_i, rst_i, enable_i,
   input  wire redirect_i,
@@ -43,9 +43,12 @@ module fetch_unit #(parameter bit PREDICT = 0, parameter bit AHEAD = 0,
   logic [26:0] ahead_line_q;
   logic [255:0] ahead_data_q;
   logic ahead_drop_q;
-  logic previous_valid_q;
-  logic [26:0] previous_line_q;
-  logic [255:0] previous_data_q;
+  // lines left: a jump back to one swaps it in without an instruction-memory request. First-in first-out replacement.
+  localparam int L0_BITS = L0_LINES > 1 ? $clog2(L0_LINES) : 1;
+  logic [L0_LINES-1:0] l0_valid_q;
+  logic [26:0] l0_line_q [L0_LINES];
+  logic [255:0] l0_data_q [L0_LINES];
+  logic [L0_BITS-1:0] l0_ptr_q;
   state_e state_q;
   logic [31:0] pc_q;
   logic [26:0] request_line_q;
@@ -92,14 +95,25 @@ module fetch_unit #(parameter bit PREDICT = 0, parameter bit AHEAD = 0,
   wire ahead_flight = ahead_q == A_REQ || ahead_q == A_RESP;
   wire ahead_match = ahead_q != A_IDLE && ahead_line_q == next_line;
   wire ahead_cancel = redirect_i || (leave && !ahead_match) || (state_q == EMPTY && ahead_q == A_HAVE);
-  // the line last left: a predicted jump back to it swaps it in without an instruction-memory request.
-  wire previous_match = PREDICT && previous_valid_q && previous_line_q == next_line;
-  wire previous_next = PREDICT && previous_valid_q && previous_line_q == pc_q[31:5] + 27'd1;
+  // lines left: a predicted jump back to one swaps it in without an instruction-memory request.
+  logic [L0_LINES-1:0] l0_hit_vec, l0_seq_vec, l0_redirect_vec;
+  logic [255:0] l0_data;
+  always_comb begin
+    l0_data = '0;
+    for (int n = 0; n < L0_LINES; n++) begin
+      l0_hit_vec[n] = l0_valid_q[n] && l0_line_q[n] == next_line;
+      l0_seq_vec[n] = l0_valid_q[n] && l0_line_q[n] == pc_q[31:5] + 27'd1;
+      l0_redirect_vec[n] = l0_valid_q[n] && l0_line_q[n] == redirect_pc_i[31:5];
+      if (redirect_i ? l0_redirect_vec[n] : l0_hit_vec[n]) l0_data |= l0_data_q[n];
+    end
+  end
+  wire previous_match = PREDICT && l0_hit_vec != 0;
+  wire previous_next = PREDICT && l0_seq_vec != 0;
   // a mispredict repair (never a trap, flush or fence.i) into a held line restarts without a request.
   wire repair_reuse = PREDICT && repair_i && enable_i && redirect_pc_i[1:0] == 0
     && !(!ICACHE && state_q inside {REQUEST, RESPONSE});
   wire repair_current = repair_reuse && state_q == BUFFER && redirect_pc_i[31:5] == pc_q[31:5];
-  wire repair_previous = repair_reuse && previous_valid_q && redirect_pc_i[31:5] == previous_line_q;
+  wire repair_previous = repair_reuse && l0_redirect_vec != 0;
 
   // next-line prefetch admission
   // suppress next-line prefetch when a remaining backward branch or jump may reuse this line.
@@ -197,7 +211,8 @@ module fetch_unit #(parameter bit PREDICT = 0, parameter bit AHEAD = 0,
       discard_q <= 0;
       ahead_q <= A_IDLE;
       ahead_drop_q <= 0;
-      previous_valid_q <= 0;
+      l0_valid_q <= '0;
+      l0_ptr_q <= 0;
       misaligned_q <= 0;
       fatal_o <= 0;
     end else if (!fatal_o) begin
@@ -235,14 +250,23 @@ module fetch_unit #(parameter bit PREDICT = 0, parameter bit AHEAD = 0,
           pc_q <= jump ? jump_pc : pc_q + advance;
           if (leave) begin
             if (PREDICT) begin
-              previous_valid_q <= 1;
-              previous_line_q <= pc_q[31:5];
-              previous_data_q <= line_q;
+              // a hit slot takes the line being left (no eviction); a miss writes the oldest slot
+              if (!(ahead_match && ahead_q == A_HAVE) && previous_match) begin
+                for (int n = 0; n < L0_LINES; n++) if (l0_hit_vec[n]) begin
+                  l0_line_q[n] <= pc_q[31:5];
+                  l0_data_q[n] <= line_q;
+                end
+              end else begin
+                l0_valid_q[l0_ptr_q] <= 1;
+                l0_line_q[l0_ptr_q] <= pc_q[31:5];
+                l0_data_q[l0_ptr_q] <= line_q;
+                l0_ptr_q <= l0_ptr_q + 1'b1;
+              end
             end
             if (ahead_match && ahead_q == A_HAVE) begin
               line_q <= ahead_data_q;
               ahead_q <= A_IDLE;
-            end else if (previous_match) line_q <= previous_data_q;
+            end else if (previous_match) line_q <= l0_data;
             else state_q <= ahead_match ? WAIT : EMPTY;
           end
         end
@@ -284,16 +308,21 @@ module fetch_unit #(parameter bit PREDICT = 0, parameter bit AHEAD = 0,
       if (ICACHE && ahead_cancel && ahead_q == A_REQ) ahead_q <= A_IDLE;
       // every redirect but a mispredict repair, including FENCE.I's, drops the retained line.
       if (redirect_i) begin
-        if (!(PREDICT && repair_i)) previous_valid_q <= 0;
+        if (!(PREDICT && repair_i)) l0_valid_q <= '0;
+        // a repair that restarts from a fresh lookup must not leave the same line held
+        if (PREDICT && repair_i && !repair_previous)
+          for (int n = 0; n < L0_LINES; n++) if (l0_redirect_vec[n]) l0_valid_q[n] <= 0;
         pc_q <= redirect_pc_i;
         if (!ICACHE && (state_q == REQUEST || state_q == RESPONSE)) begin
           if (!(state_q == RESPONSE && response_valid_i && !malformed)) discard_q <= 1;
         end else if (repair_current) state_q <= BUFFER;
         else if (repair_previous) begin
-          line_q <= previous_data_q;
-          if (state_q == BUFFER) begin
-            previous_line_q <= pc_q[31:5];
-            previous_data_q <= line_q;
+          line_q <= l0_data;
+          for (int n = 0; n < L0_LINES; n++) if (l0_redirect_vec[n]) begin
+            if (state_q == BUFFER) begin
+              l0_line_q[n] <= pc_q[31:5];
+              l0_data_q[n] <= line_q;
+            end else l0_valid_q[n] <= 0;
           end
           state_q <= BUFFER;
         end else if (redirect_lookup) begin
@@ -306,10 +335,19 @@ module fetch_unit #(parameter bit PREDICT = 0, parameter bit AHEAD = 0,
 
   // checks
 `ifndef SYNTHESIS
+  logic reset_seen_q;
+  initial reset_seen_q = 1'b0;
+  always_ff @(posedge clk_i) if (rst_i) reset_seen_q <= 1'b1;
   always_ff @(posedge clk_i) begin
     if (!rst_i) begin
       assert (!(take_i[1] && !take_i[0]) && (take_i & ~valid_o) == 0)
         else $fatal(1, "FETCH_PREFIX");
+      // held lines are distinct from each other and from the line in the buffer, once a reset has cleared them
+      if (reset_seen_q) for (int a = 0; a < L0_LINES; a++) begin
+        assert (!(l0_valid_q[a] && state_q == BUFFER && l0_line_q[a] == pc_q[31:5])) else $fatal(1, "FETCH_L0_CURRENT");
+        for (int b = a + 1; b < L0_LINES; b++)
+          assert (!(l0_valid_q[a] && l0_valid_q[b] && l0_line_q[a] == l0_line_q[b])) else $fatal(1, "FETCH_L0_DUPLICATE");
+      end
     end
   end
 `endif

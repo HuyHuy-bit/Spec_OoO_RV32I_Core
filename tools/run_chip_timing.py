@@ -44,6 +44,8 @@ def main() -> None:
                         default=Path.home() / "tools/oss-cad-suite-20260905/oss-cad-suite")
     parser.add_argument("--top", default=DEFAULT_TOP)
     parser.add_argument("--sources-config", default=DEFAULT_SOURCES, help="config/NAME.json with a sources list")
+    parser.add_argument("--period", type=float, help="clock period in ns; default: the A1 intent's")
+    parser.add_argument("--abc-period", type=float, help="period ABC maps to, in ns; default: the clock period")
     args = parser.parse_args()
     global OUT, TOP, SOURCES
     TOP = args.top
@@ -61,6 +63,7 @@ def main() -> None:
     if run([sta, "-version"], OUT / "sta_version.log").strip() != lock["opensta"]["version"]:
         raise RuntimeError("OpenSTA version mismatch")
     config = json.loads((ROOT / "config/a1_timing.json").read_text())
+    if args.period: config["period_ns"] = args.period
     dont_use = " ".join(f"-dont_use {pattern}" for pattern in config["dont_use"])
     liberty = (DEPS / lock["library"]["path"]).relative_to(ROOT)
     abc = OUT / "abc.constr"
@@ -70,7 +73,7 @@ def main() -> None:
     # insbuf replaces the rest, output bits driven by one net (the cache's line write mask).
     script = (f'read_slang --top {TOP} -D SYNTHESIS {" ".join(SOURCES)}; '
               f'synth -top {TOP} -flatten -noabc; dfflibmap -liberty {liberty} {dont_use}; '
-              f'abc -liberty {liberty} {dont_use} -constr {abc.relative_to(ROOT)} -D {config["period_ns"] * 1000}; '
+              f'abc -liberty {liberty} {dont_use} -constr {abc.relative_to(ROOT)} -D {(args.abc_period or config["period_ns"]) * 1000}; '
               f'clean -purge; splitnets; hilomap -hicell {TIE} HI -locell {TIE} LO; opt_clean -purge; insbuf -buf {BUFFER} A X; '
               f'read_liberty -lib {liberty}; check -assert; '
               f'stat -liberty {liberty}; write_json {prefix}/mapped.json; '
